@@ -640,19 +640,37 @@ def on_slate_tick(delta_time):
                 elif not overwrite and unreal.EditorAssetLibrary.does_asset_exist(map_path):
                     response = {"status": "error", "error": f"Level asset already exists and overwrite is False: {map_path}"}
                 else:
-                    created_ok = unreal.EditorLevelLibrary.new_level(map_path)
+                    # new_level opens a fresh canvas; persist and verify it lands at map_path.
+                    try:
+                        unreal.EditorLevelLibrary.new_level(map_path)
+                    except Exception:
+                        pass
                     active_w = unreal.EditorLevelLibrary.get_editor_world()
-                    if not created_ok or 'Untitled' in active_w.get_path_name():
-                        unreal.EditorLoadingAndSavingUtils.save_map(active_w, map_path)
-                        active_w = unreal.EditorLoadingAndSavingUtils.load_map(map_path)
-                    response = {
-                        "status": "success",
-                        "result": {
-                            "created": True,
-                            "map_path": map_path,
-                            "active_world": active_w.get_path_name() if active_w else None
-                        }
-                    }
+                    active_name = active_w.get_path_name() if active_w else ""
+
+                    if not active_name.startswith(map_path):
+                        if not unreal.EditorLoadingAndSavingUtils.save_map(active_w, map_path):
+                            response = {"status": "error", "error": f"Failed to save new level to {map_path}"}
+                            active_w = None
+                        else:
+                            active_w = unreal.EditorLoadingAndSavingUtils.load_map(map_path)
+
+                    if active_w is not None:
+                        final_name = active_w.get_path_name() if active_w else ""
+                        if final_name.startswith(map_path):
+                            response = {
+                                "status": "success",
+                                "result": {
+                                    "created": True,
+                                    "map_path": map_path,
+                                    "active_world": final_name
+                                }
+                            }
+                        else:
+                            response = {
+                                "status": "error",
+                                "error": f"Level creation did not yield the requested world. Active: {final_name}"
+                            }
 
             # 11. High-Throughput Mesh Grid Spawning
             elif cmd_type == "spawn_mesh_grid":
@@ -705,55 +723,98 @@ def on_slate_tick(delta_time):
                         }
                     }
 
-            # 12. Instanced Mesh Spawning (HISM - 1 actor for thousands of instances)
+            # 12. Instanced Mesh Spawning (HISM - one actor holding many instances)
             elif cmd_type == "spawn_instanced_mesh":
                 mesh_path = params.get("mesh_path", "")
                 actor_name = params.get("name", "InstancedActor")
                 folder = params.get("folder_path", "Environment/Instances")
-                instances = params.get("instances", [])  # list of {location: [x,y,z], rotation: [p,y,r], scale: [x,y,z]}
+                instances = params.get("instances", [])
 
                 mesh_asset = unreal.EditorAssetLibrary.load_asset(mesh_path)
                 if not mesh_asset or not isinstance(mesh_asset, unreal.StaticMesh):
                     response = {"status": "error", "error": f"Invalid StaticMesh asset: {mesh_path}"}
+                elif not instances:
+                    response = {"status": "error", "error": "instances list is empty; nothing to spawn"}
                 else:
-                    with unreal.ScopedEditorTransaction(f"Spawn Instanced Mesh {actor_name}"):
-                        actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
-                            unreal.StaticMeshActor,
-                            unreal.Vector(0, 0, 0),
-                            unreal.Rotator(0, 0, 0)
-                        )
-                        actor.set_actor_label(actor_name)
-                        if folder:
-                            actor.set_folder_path(folder)
-
-                        # Set mesh on standard component as template or add instances
-                        mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
-                        if mesh_comp:
-                            mesh_comp.set_static_mesh(mesh_asset)
-
-                        added_count = 0
-                        for inst in instances:
-                            loc = inst.get("location", [0, 0, 0])
-                            r = inst.get("rotation", [0, 0, 0])
-                            s = inst.get("scale", [1, 1, 1])
-                            t = unreal.Transform(
-                                location=unreal.Vector(loc[0], loc[1], loc[2]),
-                                rotation=unreal.Rotator(pitch=r[0], yaw=r[1], roll=r[2]),
-                                scale=unreal.Vector(s[0], s[1], s[2])
+                    actor = None
+                    try:
+                        with unreal.ScopedEditorTransaction(f"Spawn Instanced Mesh {actor_name}"):
+                            actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
+                                unreal.StaticMeshActor,
+                                unreal.Vector(0, 0, 0),
+                                unreal.Rotator(0, 0, 0)
                             )
-                            # Instance transform registered
-                            pass
-                            added_count += 1
+                            actor.set_actor_label(actor_name)
+                            if folder:
+                                actor.set_folder_path(folder)
 
-                    response = {
-                        "status": "success",
-                        "result": {
-                            "actor": actor.get_actor_label(),
-                            "mesh": mesh_path,
-                            "instance_count": added_count,
-                            "folder": folder
+                            # Neutralize the default component so only the HISM renders.
+                            base_comp = actor.static_mesh_component
+                            if base_comp:
+                                base_comp.set_static_mesh(None)
+
+                            # Add a HierarchicalInstancedStaticMeshComponent via the subobject subsystem.
+                            sds = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+                            if not sds:
+                                raise RuntimeError("SubobjectDataSubsystem unavailable; cannot create HISM")
+                            roots = sds.k2_gather_subobject_data_for_instance(actor)
+                            if not roots:
+                                raise RuntimeError("No root subobject handle for spawned actor")
+                            add_params = unreal.AddNewSubobjectParams(
+                                parent_handle=roots[0],
+                                new_class=unreal.HierarchicalInstancedStaticMeshComponent,
+                                blueprint_context=None
+                            )
+                            # NOTE: add_new_subobject returns (handle, Text("")); the Text is
+                            # truthy even when empty, so success is confirmed by the component lookup below.
+                            sds.add_new_subobject(add_params)
+
+                            hism = None
+                            for c in actor.get_components_by_class(unreal.InstancedStaticMeshComponent):
+                                hism = c
+                                break
+                            if hism is None:
+                                raise RuntimeError("HISM component not present after creation")
+
+                            hism.set_static_mesh(mesh_asset)
+
+                            transforms = []
+                            for inst in instances:
+                                loc = inst.get("location", [0, 0, 0])
+                                r = inst.get("rotation", [0, 0, 0])
+                                s = inst.get("scale", [1, 1, 1])
+                                transforms.append(unreal.Transform(
+                                    location=unreal.Vector(loc[0], loc[1], loc[2]),
+                                    rotation=unreal.Rotator(pitch=r[0], yaw=r[1], roll=r[2]),
+                                    scale=unreal.Vector(s[0], s[1], s[2])
+                                ))
+                            hism.add_instances(transforms, False)
+
+                            # Read back the TRUE instance count; never trust the request.
+                            real_count = hism.get_instance_count()
+                            if real_count != len(instances):
+                                raise RuntimeError(
+                                    f"Instance count mismatch: requested {len(instances)}, created {real_count}"
+                                )
+
+                        response = {
+                            "status": "success",
+                            "result": {
+                                "actor": actor.get_actor_label(),
+                                "mesh": mesh_path,
+                                "component_class": hism.get_class().get_name(),
+                                "instance_count": real_count,
+                                "folder": folder
+                            }
                         }
-                    }
+                    except Exception as e:
+                        # No half-built actor left behind on failure.
+                        if actor:
+                            try:
+                                unreal.EditorLevelLibrary.destroy_actor(actor)
+                            except Exception:
+                                pass
+                        response = {"status": "error", "error": str(e)}
 
             # 13. First-Class Light Spawning
             elif cmd_type == "spawn_light_actor":
@@ -767,6 +828,7 @@ def on_slate_tick(delta_time):
                 source_radius = float(params.get("source_radius", 20.0))
                 mobility_str = params.get("mobility", "movable").lower()
                 folder = params.get("folder_path", "Environment/Lighting")
+                warnings = []
 
                 cls_map = {
                     "pointlight": unreal.PointLight,
@@ -805,12 +867,15 @@ def on_slate_tick(delta_time):
                         if hasattr(c, "set_editor_property"):
                             try:
                                 c.set_editor_property("source_radius", source_radius)
-                            except:
-                                pass
+                            except Exception as _sr_err:
+                                warnings.append(f"source_radius not applied: {_sr_err}")
 
+                    light_result = inspect_actor_data(actor)
+                    if warnings:
+                        light_result["warnings"] = warnings
                     response = {
                         "status": "success",
-                        "result": inspect_actor_data(actor)
+                        "result": light_result
                     }
 
             # 14. Actor Folder Organization
