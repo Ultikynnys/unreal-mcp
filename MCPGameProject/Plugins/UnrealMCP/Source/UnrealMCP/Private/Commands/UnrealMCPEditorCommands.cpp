@@ -1227,18 +1227,21 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint name is empty"));
     }
 
-    FString Root      = TEXT("/Game/Blueprints/");
-    FString AssetPath = Root + BlueprintName;
-
-    if (!FPackageName::DoesPackageExist(AssetPath))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found – it must reside under /Game/Blueprints"), *BlueprintName));
-    }
-
-    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+    // Load the Blueprint asset through the editor asset library and use its
+    // generated class. Calling FPackageName::DoesPackageExist() here blocked the
+    // game thread long enough that the bridge timed out before the handler could
+    // respond, even when the blueprint existed.
+    const FString FullPath = FString::Printf(TEXT("/Game/Blueprints/%s.%s"), *BlueprintName, *BlueprintName);
+    UBlueprint* Blueprint = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found - it must reside under /Game/Blueprints"), *BlueprintName));
+    }
+
+    UClass* BlueprintClass = Blueprint->GeneratedClass;
+    if (!BlueprintClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' has no generated class; compile it first"), *BlueprintName));
     }
 
     // Get transform parameters
@@ -1276,7 +1279,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     // modal "name already in use" dialog on the game thread, which blocks the
     // bridge and makes the command time out. Let UE pick a unique name and set
     // the display label afterwards instead.
-    AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
+    AActor* NewActor = World->SpawnActor<AActor>(BlueprintClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
         NewActor->SetActorLabel(*ActorName);
