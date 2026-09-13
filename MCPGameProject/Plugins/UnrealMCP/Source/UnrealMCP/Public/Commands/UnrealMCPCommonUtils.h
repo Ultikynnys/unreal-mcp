@@ -15,6 +15,12 @@ class UK2Node_VariableGet;
 class UK2Node_VariableSet;
 class UK2Node_InputAction;
 class UK2Node_Self;
+class UK2Node_IfThenElse;
+class UK2Node_ExecutionSequence;
+class UK2Node_DynamicCast;
+class UK2Node_CustomEvent;
+class UK2Node_MacroInstance;
+class UClass;
 class UFunction;
 
 /**
@@ -48,6 +54,12 @@ public:
     static UK2Node_VariableSet* CreateVariableSetNode(UEdGraph* Graph, UBlueprint* Blueprint, const FString& VariableName, const FVector2D& Position);
     static UK2Node_InputAction* CreateInputActionNode(UEdGraph* Graph, const FString& ActionName, const FVector2D& Position);
     static UK2Node_Self* CreateSelfReferenceNode(UEdGraph* Graph, const FVector2D& Position);
+    static UK2Node_IfThenElse* CreateBranchNode(UEdGraph* Graph, const FVector2D& Position);
+    static UK2Node_ExecutionSequence* CreateSequenceNode(UEdGraph* Graph, int32 NumOutputs, const FVector2D& Position);
+    static UK2Node_DynamicCast* CreateCastNode(UEdGraph* Graph, UClass* TargetClass, const FVector2D& Position);
+    static UK2Node_CustomEvent* CreateCustomEventNode(UEdGraph* Graph, const FString& EventName, const FVector2D& Position);
+    static UK2Node_MacroInstance* CreateMacroNode(UEdGraph* Graph, const FString& MacroName, const FVector2D& Position);
+    static UK2Node_CallFunction* CreateSpawnActorNode(UEdGraph* Graph, UClass* ActorClass, const FVector2D& Position);
     static bool ConnectGraphNodes(UEdGraph* Graph, UEdGraphNode* SourceNode, const FString& SourcePinName, 
                                 UEdGraphNode* TargetNode, const FString& TargetPinName);
     static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);

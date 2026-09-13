@@ -10,12 +10,18 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_InputAction.h"
 #include "K2Node_Self.h"
+#include "K2Node_IfThenElse.h"
+#include "K2Node_ExecutionSequence.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_CustomEvent.h"
+#include "K2Node_MacroInstance.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "GameFramework/InputSettings.h"
 #include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "EdGraphSchema_K2.h"
+#include "UObject/UObjectIterator.h"
 
 // Declare the log category
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealMCP, Log, All);
@@ -57,6 +63,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("find_blueprint_nodes"))
     {
         return HandleFindBlueprintNodes(Params);
+    }
+    else if (CommandType == TEXT("add_blueprint_node"))
+    {
+        return HandleAddBlueprintNode(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -939,5 +949,164 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("node_guids"), NodeGuidArray);
     
+    return ResultObj;
+}
+
+namespace
+{
+    // Resolves a class by full path ("/Script/Engine.Actor") or by name, trying the common
+    // A*/U* prefixes, then any loaded class of that name.
+    UClass* ResolveBlueprintNodeClass(const FString& ClassName)
+    {
+        if (ClassName.IsEmpty()) { return nullptr; }
+
+        if (ClassName.StartsWith(TEXT("/")))
+        {
+            if (UClass* C = LoadObject<UClass>(nullptr, *ClassName)) { return C; }
+        }
+
+        // UClass object names drop the C++ A/U prefix, so "ACharacter" -> "Character".
+        TArray<FString> Candidates;
+        Candidates.Add(ClassName);
+        if (ClassName.StartsWith(TEXT("A")) || ClassName.StartsWith(TEXT("U")))
+        {
+            Candidates.Add(ClassName.RightChop(1));
+        }
+        else
+        {
+            Candidates.Add(TEXT("A") + ClassName);
+            Candidates.Add(TEXT("U") + ClassName);
+        }
+
+        for (const FString& Candidate : Candidates)
+        {
+            for (TObjectIterator<UClass> It; It; ++It)
+            {
+                if (It->GetName() == Candidate) { return *It; }
+            }
+        }
+        return nullptr;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString NodeType;
+    if (!Params->TryGetStringField(TEXT("node_type"), NodeType))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_type' parameter"));
+    }
+    NodeType.ToLowerInline();
+
+    FVector2D NodePosition(0.0f, 0.0f);
+    if (Params->HasField(TEXT("node_position")))
+    {
+        NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+    }
+
+    TSharedPtr<FJsonObject> NodeParams;
+    const TSharedPtr<FJsonObject>* NodeParamsObj = nullptr;
+    if (Params->TryGetObjectField(TEXT("params"), NodeParamsObj) && NodeParamsObj)
+    {
+        NodeParams = *NodeParamsObj;
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* EventGraph = FUnrealMCPCommonUtils::FindOrCreateEventGraph(Blueprint);
+    if (!EventGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
+    }
+
+    UEdGraphNode* Node = nullptr;
+
+    if (NodeType == TEXT("branch") || NodeType == TEXT("if"))
+    {
+        Node = FUnrealMCPCommonUtils::CreateBranchNode(EventGraph, NodePosition);
+    }
+    else if (NodeType == TEXT("sequence"))
+    {
+        int32 NumOutputs = 0;
+        if (NodeParams.IsValid()) { NodeParams->TryGetNumberField(TEXT("num_outputs"), NumOutputs); }
+        Node = FUnrealMCPCommonUtils::CreateSequenceNode(EventGraph, NumOutputs, NodePosition);
+    }
+    else if (NodeType == TEXT("cast"))
+    {
+        FString TargetClassName;
+        if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("target_class"), TargetClassName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'cast' node requires params.target_class"));
+        }
+        UClass* TargetClass = ResolveBlueprintNodeClass(TargetClassName);
+        if (!TargetClass)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Could not resolve class: %s"), *TargetClassName));
+        }
+        Node = FUnrealMCPCommonUtils::CreateCastNode(EventGraph, TargetClass, NodePosition);
+    }
+    else if (NodeType == TEXT("custom_event"))
+    {
+        FString EventName;
+        if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("event_name"), EventName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'custom_event' node requires params.event_name"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateCustomEventNode(EventGraph, EventName, NodePosition);
+    }
+    else if (NodeType == TEXT("foreach") || NodeType == TEXT("for_each"))
+    {
+        Node = FUnrealMCPCommonUtils::CreateMacroNode(EventGraph, TEXT("ForEachLoop"), NodePosition);
+    }
+    else if (NodeType == TEXT("spawn_actor"))
+    {
+        UClass* ActorClass = nullptr;
+        FString ActorClassName;
+        if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("actor_class"), ActorClassName))
+        {
+            ActorClass = ResolveBlueprintNodeClass(ActorClassName);
+        }
+        Node = FUnrealMCPCommonUtils::CreateSpawnActorNode(EventGraph, ActorClass, NodePosition);
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor)"), *NodeType));
+    }
+
+    if (!Node)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create '%s' node"), *NodeType));
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("node_type"), NodeType);
+
+    // Report the pins so the caller can wire connections with connect_blueprint_nodes.
+    TArray<TSharedPtr<FJsonValue>> PinsArray;
+    for (UEdGraphPin* Pin : Node->Pins)
+    {
+        if (!Pin) { continue; }
+        TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+        PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+        PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
+        PinObj->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+        PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+    }
+    ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+
     return ResultObj;
 } 

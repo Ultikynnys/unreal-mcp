@@ -429,4 +429,54 @@ def register_blueprint_node_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
     
+    @mcp.tool()
+    def add_blueprint_node(
+        ctx: Context,
+        blueprint_name: str,
+        node_type: str,
+        params: Optional[Dict[str, Any]] = None,
+        node_position = None
+    ) -> Dict[str, Any]:
+        """Add a control-flow / special node to a Blueprint's event graph.
+
+        node_type is one of:
+            - "branch"       : if/then/else (condition + then/else exec)
+            - "sequence"     : fan-out exec (params.num_outputs optional)
+            - "cast"         : dynamic cast to a class (params.target_class required)
+            - "custom_event" : a named custom event (params.event_name required)
+            - "foreach"      : ForEachLoop macro (array element + loop body)
+            - "spawn_actor"  : SpawnActorFromClass (params.actor_class optional)
+
+        Returns the node_id and its pins (name / direction / category) so they can be wired
+        with connect_blueprint_nodes.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            if params is None:
+                params = {}
+            if node_position is None:
+                node_position = [0, 0]
+
+            command_params = {
+                "blueprint_name": blueprint_name,
+                "node_type": node_type,
+                "params": params,
+                "node_position": node_position
+            }
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Adding '{node_type}' node to blueprint '{blueprint_name}'")
+            response = unreal.send_command("add_blueprint_node", command_params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error adding blueprint node: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Blueprint node tools registered successfully")

@@ -10,6 +10,12 @@
 #include "K2Node_VariableSet.h"
 #include "K2Node_InputAction.h"
 #include "K2Node_Self.h"
+#include "K2Node_IfThenElse.h"
+#include "K2Node_ExecutionSequence.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_CustomEvent.h"
+#include "K2Node_MacroInstance.h"
+#include "Kismet/GameplayStatics.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Components/StaticMeshComponent.h"
@@ -340,6 +346,132 @@ UK2Node_Self* FUnrealMCPCommonUtils::CreateSelfReferenceNode(UEdGraph* Graph, co
     SelfNode->AllocateDefaultPins();
     
     return SelfNode;
+}
+
+UK2Node_IfThenElse* FUnrealMCPCommonUtils::CreateBranchNode(UEdGraph* Graph, const FVector2D& Position)
+{
+    if (!Graph) { return nullptr; }
+
+    UK2Node_IfThenElse* Node = NewObject<UK2Node_IfThenElse>(Graph);
+    Node->NodePosX = Position.X;
+    Node->NodePosY = Position.Y;
+    Graph->AddNode(Node, true);
+    Node->CreateNewGuid();
+    Node->PostPlacedNewNode();
+    Node->AllocateDefaultPins();
+
+    return Node;
+}
+
+UK2Node_ExecutionSequence* FUnrealMCPCommonUtils::CreateSequenceNode(UEdGraph* Graph, int32 NumOutputs, const FVector2D& Position)
+{
+    if (!Graph) { return nullptr; }
+
+    UK2Node_ExecutionSequence* Node = NewObject<UK2Node_ExecutionSequence>(Graph);
+    Node->NodePosX = Position.X;
+    Node->NodePosY = Position.Y;
+    Graph->AddNode(Node, true);
+    Node->CreateNewGuid();
+    Node->PostPlacedNewNode();
+    Node->AllocateDefaultPins();
+
+    // Count existing 'then_' execution outputs, then add pins until NumOutputs is reached.
+    int32 Existing = 0;
+    for (UEdGraphPin* Pin : Node->Pins)
+    {
+        if (Pin && Pin->Direction == EGPD_Output && Pin->PinName.ToString().StartsWith(TEXT("then_")))
+        {
+            ++Existing;
+        }
+    }
+    while (NumOutputs > 0 && Existing < NumOutputs)
+    {
+        Node->AddInputPin();
+        ++Existing;
+    }
+
+    return Node;
+}
+
+UK2Node_DynamicCast* FUnrealMCPCommonUtils::CreateCastNode(UEdGraph* Graph, UClass* TargetClass, const FVector2D& Position)
+{
+    if (!Graph || !TargetClass) { return nullptr; }
+
+    UK2Node_DynamicCast* Node = NewObject<UK2Node_DynamicCast>(Graph);
+    Node->TargetType = TargetClass;
+    Node->SetPurity(false); // impure => exec pins, so the cast can gate success/failure
+    Node->NodePosX = Position.X;
+    Node->NodePosY = Position.Y;
+    Graph->AddNode(Node, true);
+    Node->CreateNewGuid();
+    Node->PostPlacedNewNode();
+    Node->AllocateDefaultPins();
+
+    return Node;
+}
+
+UK2Node_CustomEvent* FUnrealMCPCommonUtils::CreateCustomEventNode(UEdGraph* Graph, const FString& EventName, const FVector2D& Position)
+{
+    if (!Graph) { return nullptr; }
+
+    // UK2Node_CustomEvent::CreateFromFunction requires a non-null UFunction, so build the
+    // node directly instead (a brand new custom event has no backing function).
+    UK2Node_CustomEvent* Node = NewObject<UK2Node_CustomEvent>(Graph);
+    Node->CustomFunctionName = FName(*EventName);
+    Node->NodePosX = Position.X;
+    Node->NodePosY = Position.Y;
+    Graph->AddNode(Node, true);
+    Node->CreateNewGuid();
+    Node->PostPlacedNewNode();
+    Node->AllocateDefaultPins();
+
+    return Node;
+}
+
+UK2Node_MacroInstance* FUnrealMCPCommonUtils::CreateMacroNode(UEdGraph* Graph, const FString& MacroName, const FVector2D& Position)
+{
+    if (!Graph) { return nullptr; }
+
+    const FString MacroPath = FString::Printf(
+        TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:%s"), *MacroName);
+    UEdGraph* MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
+    if (!MacroGraph)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Could not load standard macro graph: %s"), *MacroPath);
+        return nullptr;
+    }
+
+    UK2Node_MacroInstance* Node = NewObject<UK2Node_MacroInstance>(Graph);
+    Node->SetMacroGraph(MacroGraph);
+    Node->NodePosX = Position.X;
+    Node->NodePosY = Position.Y;
+    Graph->AddNode(Node, true);
+    Node->CreateNewGuid();
+    Node->PostPlacedNewNode();
+    Node->AllocateDefaultPins();
+
+    return Node;
+}
+
+UK2Node_CallFunction* FUnrealMCPCommonUtils::CreateSpawnActorNode(UEdGraph* Graph, UClass* ActorClass, const FVector2D& Position)
+{
+    if (!Graph) { return nullptr; }
+
+    // The dedicated UK2Node_SpawnActorFromClass is a composite node that asserts when built
+    // headless, so expose spawning through the underlying gameplay-statics function instead.
+    UFunction* SpawnFunction = UGameplayStatics::StaticClass()->FindFunctionByName(TEXT("BeginDeferredActorSpawnFromClass"));
+    if (!SpawnFunction) { return nullptr; }
+
+    UK2Node_CallFunction* Node = CreateFunctionCallNode(Graph, SpawnFunction, Position);
+    if (Node && ActorClass)
+    {
+        if (UEdGraphPin* ClassPin = FindPin(Node, TEXT("ActorClass"), EGPD_Input))
+        {
+            ClassPin->DefaultObject = ActorClass;
+        }
+    }
+
+    return Node;
 }
 
 bool FUnrealMCPCommonUtils::ConnectGraphNodes(UEdGraph* Graph, UEdGraphNode* SourceNode, const FString& SourcePinName, 
