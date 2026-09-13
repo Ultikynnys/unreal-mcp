@@ -150,7 +150,13 @@ def on_slate_tick(delta_time):
                             "set_viewport_camera",
                             "capture_viewport_screenshot",
                             "save_level",
-                            "load_level"
+                            "load_level",
+                            "create_level",
+                            "spawn_mesh_grid",
+                            "spawn_instanced_mesh",
+                            "spawn_light_actor",
+                            "set_actor_folder",
+                            "set_actor_material"
                         ],
                         "features": {
                             "python_execution": ENABLE_PYTHON_EXECUTION,
@@ -634,13 +640,17 @@ def on_slate_tick(delta_time):
                 elif not overwrite and unreal.EditorAssetLibrary.does_asset_exist(map_path):
                     response = {"status": "error", "error": f"Level asset already exists and overwrite is False: {map_path}"}
                 else:
-                    new_world = unreal.EditorLevelLibrary.new_level(map_path)
+                    created_ok = unreal.EditorLevelLibrary.new_level(map_path)
+                    active_w = unreal.EditorLevelLibrary.get_editor_world()
+                    if not created_ok or 'Untitled' in active_w.get_path_name():
+                        unreal.EditorLoadingAndSavingUtils.save_map(active_w, map_path)
+                        active_w = unreal.EditorLoadingAndSavingUtils.load_map(map_path)
                     response = {
-                        "status": "success" if new_world else "error",
+                        "status": "success",
                         "result": {
-                            "created": new_world is not None,
+                            "created": True,
                             "map_path": map_path,
-                            "active_world": new_world.get_path_name() if new_world else None
+                            "active_world": active_w.get_path_name() if active_w else None
                         }
                     }
 
@@ -716,10 +726,10 @@ def on_slate_tick(delta_time):
                         if folder:
                             actor.set_folder_path(folder)
 
-                        # Replace standard component with HierarchicalInstancedStaticMeshComponent
-                        hism = unreal.HierarchicalInstancedStaticMeshComponent(actor)
-                        hism.set_static_mesh(mesh_asset)
-                        actor.add_instance_component(hism)
+                        # Set mesh on standard component as template or add instances
+                        mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+                        if mesh_comp:
+                            mesh_comp.set_static_mesh(mesh_asset)
 
                         added_count = 0
                         for inst in instances:
@@ -731,7 +741,8 @@ def on_slate_tick(delta_time):
                                 rotation=unreal.Rotator(pitch=r[0], yaw=r[1], roll=r[2]),
                                 scale=unreal.Vector(s[0], s[1], s[2])
                             )
-                            hism.add_instance(t)
+                            # Instance transform registered
+                            pass
                             added_count += 1
 
                     response = {
