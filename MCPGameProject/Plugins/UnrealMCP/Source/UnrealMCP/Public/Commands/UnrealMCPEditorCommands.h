@@ -61,4 +61,8 @@ private:
     // Misc
     TSharedPtr<FJsonObject> HandleBatchExecute(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleExecutePython(const TSharedPtr<FJsonObject>& Params);
+
+    // Asset importing (async job + status polling)
+    TSharedPtr<FJsonObject> HandleImportAsset(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetImportStatus(const TSharedPtr<FJsonObject>& Params);
 }; 

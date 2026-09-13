@@ -36,6 +36,11 @@
 #include "IPythonScriptPlugin.h"
 #include "Misc/Paths.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/Guid.h"
+#include "AssetToolsModule.h"
+#include "AssetImportTask.h"
+#include "Containers/Ticker.h"
+#include "Engine/Texture2D.h"
 
 namespace
 {
@@ -53,6 +58,127 @@ namespace
         if (Arr->Num() > 2) { B = (float)(*Arr)[2]->AsNumber(); }
         if (R > 1.f || G > 1.f || B > 1.f) { R /= 255.f; G /= 255.f; B /= 255.f; }
         return FLinearColor(R, G, B);
+    }
+
+    // ---------------------------------------------------------------------
+    // Async asset import jobs (polled via get_import_status)
+    // ---------------------------------------------------------------------
+
+    struct FImportJobState
+    {
+        FString State;              // queued | running | done | failed
+        TArray<FString> Assets;     // imported object paths
+        TArray<FString> Log;
+        FString Error;
+    };
+
+    TMap<FString, TSharedPtr<FImportJobState>> GImportJobs;
+    FCriticalSection GImportJobsMutex;
+
+    // Applies optional texture import options to an imported texture and re-saves it.
+    void ApplyTextureImportOptions(UTexture2D* Tex, const TSharedPtr<FJsonObject>& Options)
+    {
+        if (!Tex || !Options.IsValid()) { return; }
+        bool bChanged = false;
+
+        bool bNormal = false;
+        if (Options->TryGetBoolField(TEXT("is_normal_map"), bNormal) && bNormal)
+        {
+            Tex->CompressionSettings = TextureCompressionSettings::TC_Normalmap;
+            Tex->SRGB = false;
+            bChanged = true;
+        }
+
+        FString Compression;
+        if (Options->TryGetStringField(TEXT("compression"), Compression))
+        {
+            Compression.ToLowerInline();
+            if (Compression == TEXT("grayscale")) { Tex->CompressionSettings = TextureCompressionSettings::TC_Grayscale; Tex->SRGB = false; bChanged = true; }
+            else if (Compression == TEXT("normalmap")) { Tex->CompressionSettings = TextureCompressionSettings::TC_Normalmap; Tex->SRGB = false; bChanged = true; }
+            else if (Compression == TEXT("default")) { Tex->CompressionSettings = TextureCompressionSettings::TC_Default; bChanged = true; }
+        }
+
+        bool bSrgb = true;
+        if (Options->TryGetBoolField(TEXT("srgb"), bSrgb))
+        {
+            Tex->SRGB = bSrgb;
+            bChanged = true;
+        }
+
+        if (bChanged)
+        {
+            Tex->MarkPackageDirty();
+            UEditorAssetLibrary::SaveLoadedAsset(Tex, false);
+        }
+    }
+
+    // Runs on the core-ticker game-thread tick, i.e. OUTSIDE the game-thread task that
+    // dispatched the command. Importing assets here avoids the nested-task assertion that
+    // fires when AssetImportTask's internal task-graph flush runs inside a task.
+    void RunImportJob(const FString& JobId, TArray<FString> Sources, FString DestinationPath,
+                      bool bReplaceExisting, TSharedPtr<FJsonObject> Options)
+    {
+        TSharedPtr<FImportJobState> Job;
+        {
+            FScopeLock Lock(&GImportJobsMutex);
+            TSharedPtr<FImportJobState>* Found = GImportJobs.Find(JobId);
+            if (!Found) { return; }
+            Job = *Found;
+            Job->State = TEXT("running");
+        }
+
+        if (Sources.Num() == 0)
+        {
+            Job->State = TEXT("failed");
+            Job->Error = TEXT("No sources provided");
+            return;
+        }
+
+        FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+        IAssetTools& AssetTools = AssetToolsModule.Get();
+
+        for (const FString& Src : Sources)
+        {
+            if (!FPaths::FileExists(Src))
+            {
+                Job->Log.Add(FString::Printf(TEXT("Skipped (file not found): %s"), *Src));
+                continue;
+            }
+
+            UAssetImportTask* Task = NewObject<UAssetImportTask>();
+            Task->AddToRoot();
+            Task->Filename = Src;
+            Task->DestinationPath = DestinationPath;
+            Task->bReplaceExisting = bReplaceExisting;
+            Task->bAutomated = true;
+            Task->bSave = true;
+            Task->bAsync = false;
+
+            TArray<UAssetImportTask*> Tasks;
+            Tasks.Add(Task);
+            AssetTools.ImportAssetTasks(Tasks);
+
+            const TArray<UObject*>& Objects = Task->GetObjects();
+            if (Objects.Num() == 0)
+            {
+                Job->Log.Add(FString::Printf(TEXT("No objects produced for: %s"), *Src));
+            }
+            for (UObject* Obj : Objects)
+            {
+                if (!Obj) { continue; }
+                if (UTexture2D* Tex = Cast<UTexture2D>(Obj))
+                {
+                    ApplyTextureImportOptions(Tex, Options);
+                }
+                Job->Assets.Add(Obj->GetPathName());
+            }
+            Task->RemoveFromRoot();
+        }
+
+        if (Job->State != TEXT("failed"))
+        {
+            Job->State = TEXT("done");
+        }
     }
 }
 
@@ -129,6 +255,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("capture_viewport_screenshot")) { return HandleCaptureViewportScreenshot(Params); }
     else if (CommandType == TEXT("batch_execute")) { return HandleBatchExecute(Params); }
     else if (CommandType == TEXT("execute_python")) { return HandleExecutePython(Params); }
+    else if (CommandType == TEXT("import_asset")) { return HandleImportAsset(Params); }
+    else if (CommandType == TEXT("get_import_status")) { return HandleGetImportStatus(Params); }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
@@ -150,7 +278,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("take_screenshot"), TEXT("capture_viewport_screenshot"), TEXT("set_viewport_camera"),
         TEXT("create_level"), TEXT("save_level"), TEXT("load_level"), TEXT("delete_level"),
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
-        TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server")
+        TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server"),
+        TEXT("import_asset"), TEXT("get_import_status")
     };
     TArray<TSharedPtr<FJsonValue>> CommandArray;
     for (const TCHAR* Cmd : SupportedCommands)
@@ -885,6 +1014,102 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleExecutePython(const TSha
     ResultObj->SetBoolField(TEXT("success"), bSuccess);
     ResultObj->SetStringField(TEXT("command_result"), Command.CommandResult);
     ResultObj->SetArrayField(TEXT("output"), LogArray);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleImportAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString DestinationPath = TEXT("/Game");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    bool bReplaceExisting = true;
+    Params->TryGetBoolField(TEXT("replace_existing"), bReplaceExisting);
+
+    TArray<FString> Sources;
+    const TArray<TSharedPtr<FJsonValue>>* SourcesArr = nullptr;
+    if (Params->TryGetArrayField(TEXT("sources"), SourcesArr) && SourcesArr)
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *SourcesArr)
+        {
+            if (Value.IsValid()) { Sources.Add(Value->AsString()); }
+        }
+    }
+    else
+    {
+        FString Single;
+        if (Params->TryGetStringField(TEXT("source"), Single)) { Sources.Add(Single); }
+    }
+    if (Sources.Num() == 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'sources' (array) or 'source' (string) parameter"));
+    }
+
+    TSharedPtr<FJsonObject> Options;
+    const TSharedPtr<FJsonObject>* OptionsObj = nullptr;
+    if (Params->TryGetObjectField(TEXT("options"), OptionsObj) && OptionsObj)
+    {
+        Options = *OptionsObj;
+    }
+
+    const FString JobId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    {
+        FScopeLock Lock(&GImportJobsMutex);
+        TSharedPtr<FImportJobState> Job = MakeShared<FImportJobState>();
+        Job->State = TEXT("queued");
+        GImportJobs.Add(JobId, Job);
+    }
+
+    // Defer the actual import to the next core-ticker tick so it does NOT run inside the
+    // game-thread task that dispatched this command (which would trip the importer's
+    // nested task-graph assertion). Returns immediately with a job id.
+    FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda(
+            [JobId, Sources, DestinationPath, bReplaceExisting, Options](float) -> bool
+            {
+                RunImportJob(JobId, Sources, DestinationPath, bReplaceExisting, Options);
+                return false; // one-shot
+            }),
+        0.0f);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("job_id"), JobId);
+    ResultObj->SetStringField(TEXT("state"), TEXT("queued"));
+    ResultObj->SetNumberField(TEXT("count"), Sources.Num());
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetImportStatus(const TSharedPtr<FJsonObject>& Params)
+{
+    FString JobId;
+    if (!Params->TryGetStringField(TEXT("job_id"), JobId))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'job_id' parameter"));
+    }
+
+    TSharedPtr<FImportJobState> Job;
+    {
+        FScopeLock Lock(&GImportJobsMutex);
+        TSharedPtr<FImportJobState>* Found = GImportJobs.Find(JobId);
+        if (!Found)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown job_id: %s"), *JobId));
+        }
+        Job = *Found;
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("job_id"), JobId);
+    ResultObj->SetStringField(TEXT("state"), Job->State);
+    ResultObj->SetStringField(TEXT("error"), Job->Error);
+
+    TArray<TSharedPtr<FJsonValue>> AssetsArr;
+    for (const FString& AssetPath : Job->Assets) { AssetsArr.Add(MakeShared<FJsonValueString>(AssetPath)); }
+    ResultObj->SetArrayField(TEXT("assets"), AssetsArr);
+
+    TArray<TSharedPtr<FJsonValue>> LogArr;
+    for (const FString& Line : Job->Log) { LogArr.Add(MakeShared<FJsonValueString>(Line)); }
+    ResultObj->SetArrayField(TEXT("log"), LogArr);
+
     return ResultObj;
 }
 

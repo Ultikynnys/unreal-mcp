@@ -256,6 +256,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("capture_viewport_screenshot") ||
                      CommandType == TEXT("batch_execute") ||
                      CommandType == TEXT("execute_python") ||
+                     CommandType == TEXT("import_asset") ||
+                     CommandType == TEXT("get_import_status") ||
                      CommandType == TEXT("reload_server"))
             {
                 if (CommandType == TEXT("reload_server"))

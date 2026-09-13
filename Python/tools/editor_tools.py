@@ -754,4 +754,57 @@ def register_editor_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def import_asset(
+        ctx: Context,
+        sources: List[str],
+        destination_path: str = "/Game",
+        kind: str = "auto",
+        replace_existing: bool = True,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Import external asset files (textures / meshes / audio) from disk into the project.
+
+        Runs ASYNCHRONOUSLY on the Unreal side: this returns a job_id immediately. Poll
+        get_import_status(job_id) until state is "done" or "failed". The import is deferred to
+        the next editor tick so it never crashes the editor (unlike importing inline).
+
+        Format is auto-detected: FBX/OBJ/glTF/USD meshes, PNG/JPG/EXR/TGA/HDR textures,
+        WAV/OGG audio.
+
+        options (textures): {"srgb": bool, "is_normal_map": bool,
+                             "compression": "default" | "grayscale" | "normalmap"}
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "sources": sources,
+                "destination_path": destination_path,
+                "kind": kind,
+                "replace_existing": replace_existing,
+                "options": options or {}
+            }
+            return unreal.send_command("import_asset", params)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_import_status(ctx: Context, job_id: str) -> Dict[str, Any]:
+        """Poll an async import job started by import_asset.
+
+        state is one of queued | running | done | failed. On success, assets lists the
+        imported object paths; log carries per-file notes; error is set on failure.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("get_import_status", {"job_id": job_id})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")
