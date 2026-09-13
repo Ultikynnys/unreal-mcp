@@ -366,4 +366,54 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def spawn_mesh_actor(
+        ctx: Context,
+        mesh_path: str,
+        name: str = "MeshActor",
+        location: Optional[List[float]] = None,
+        rotation: Optional[List[float]] = None,
+        scale: Optional[List[float]] = None
+    ) -> Dict[str, Any]:
+        """Spawn a StaticMeshActor with a specific static mesh asset into the current level."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "mesh_path": mesh_path,
+                "name": name,
+                "location": location or [0.0, 0.0, 0.0],
+                "rotation": rotation or [0.0, 0.0, 0.0],
+                "scale": scale or [1.0, 1.0, 1.0]
+            }
+            return unreal.send_command("spawn_mesh_actor", params)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def execute_python(ctx: Context, code: str) -> Dict[str, Any]:
+        """Execute arbitrary Python code inside the running Unreal Editor on the main thread."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("execute_python", {"code": code})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def save_level(ctx: Context) -> Dict[str, Any]:
+        """Save the current level in the Unreal Editor."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("save_level", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")
