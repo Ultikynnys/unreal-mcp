@@ -50,6 +50,8 @@
 #include "GameFramework/InputSettings.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+#include "Editor.h"
+#include "TimerManager.h"
 // Include our new command handler classes
 #include "Commands/UnrealMCPEditorCommands.h"
 #include "Commands/UnrealMCPBlueprintCommands.h"
@@ -234,9 +236,39 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_actor_property") ||
                      CommandType == TEXT("spawn_blueprint_actor") ||
                      CommandType == TEXT("focus_viewport") || 
-                     CommandType == TEXT("take_screenshot"))
+                     CommandType == TEXT("take_screenshot") ||
+                     CommandType == TEXT("get_actor_details") ||
+                     CommandType == TEXT("get_capabilities") ||
+                     CommandType == TEXT("query_assets") ||
+                     CommandType == TEXT("get_asset_details") ||
+                     CommandType == TEXT("spawn_mesh_actor") ||
+                     CommandType == TEXT("spawn_light_actor") ||
+                     CommandType == TEXT("spawn_mesh_grid") ||
+                     CommandType == TEXT("spawn_instanced_mesh") ||
+                     CommandType == TEXT("set_actor_material") ||
+                     CommandType == TEXT("set_actor_folder") ||
+                     CommandType == TEXT("delete_actors_by_prefix") ||
+                     CommandType == TEXT("create_level") ||
+                     CommandType == TEXT("save_level") ||
+                     CommandType == TEXT("load_level") ||
+                     CommandType == TEXT("delete_level") ||
+                     CommandType == TEXT("set_viewport_camera") ||
+                     CommandType == TEXT("capture_viewport_screenshot") ||
+                     CommandType == TEXT("batch_execute") ||
+                     CommandType == TEXT("execute_python") ||
+                     CommandType == TEXT("reload_server"))
             {
-                ResultJson = EditorCommands->HandleCommand(CommandType, Params);
+                if (CommandType == TEXT("reload_server"))
+                {
+                    ReloadServer();
+                    ResultJson = MakeShareable(new FJsonObject);
+                    ResultJson->SetBoolField(TEXT("success"), true);
+                    ResultJson->SetStringField(TEXT("message"), TEXT("Server reload scheduled"));
+                }
+                else
+                {
+                    ResultJson = EditorCommands->HandleCommand(CommandType, Params);
+                }
             }
             // Blueprint Commands
             else if (CommandType == TEXT("create_blueprint") || 
@@ -329,4 +361,29 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     });
     
     return Future.Get();
+}
+
+// Schedule a deferred server restart so the in-flight response can be sent first
+void UUnrealMCPBridge::ReloadServer()
+{
+    if (GEditor)
+    {
+        FTimerHandle ReloadTimerHandle;
+        GEditor->GetTimerManager()->SetTimer(
+            ReloadTimerHandle,
+            FTimerDelegate::CreateUObject(this, &UUnrealMCPBridge::RestartServerDeferred),
+            1.0f,
+            false);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("UnrealMCPBridge: Cannot reload server - GEditor unavailable"));
+    }
+}
+
+void UUnrealMCPBridge::RestartServerDeferred()
+{
+    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Reloading server..."));
+    StopServer();
+    StartServer();
 }

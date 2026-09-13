@@ -44,6 +44,10 @@ public:
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
+	// Reload the MCP TCP server (deferred so the current response can flush first)
+	void ReloadServer();
+	void RestartServerDeferred();
+
 private:
 	// Server state
 	bool bIsRunning;

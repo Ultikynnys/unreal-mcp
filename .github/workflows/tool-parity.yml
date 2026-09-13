@@ -1,0 +1,43 @@
+name: tool-parity
+
+# Enforce that the Python MCP tool layer and the C++ UnrealMCP plugin stay in sync:
+# every command the Python tools send must have a handler in the C++ dispatch.
+# See Python/scripts/check_tool_parity.py for the contract. The unit tests first
+# prove the checker itself detects gaps (negative test), then the checker runs.
+
+on:
+  push:
+    paths:
+      - "Python/tools/**"
+      - "Python/scripts/**"
+      - "MCPGameProject/Plugins/UnrealMCP/Source/**"
+      - ".github/workflows/tool-parity.yml"
+  pull_request:
+    paths:
+      - "Python/tools/**"
+      - "Python/scripts/**"
+      - "MCPGameProject/Plugins/UnrealMCP/Source/**"
+      - ".github/workflows/tool-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Python <-> C++ parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Confirm the parity checker detects gaps (unit tests)
+        run: python Python/scripts/test_check_tool_parity.py
+
+      - name: Assert Python tool layer <-> C++ plugin parity
+        run: python Python/scripts/check_tool_parity.py
