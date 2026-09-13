@@ -20,6 +20,7 @@
 #include "GameFramework/InputSettings.h"
 #include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "EdGraphSchema_K2.h"
 #include "UObject/UObjectIterator.h"
 
@@ -745,6 +746,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported variable type: %s"), *VariableType));
     }
 
+    // Optional container type (Array / Set / Map) for the variable.
+    FString Container;
+    if (Params->TryGetStringField(TEXT("container"), Container))
+    {
+        if (Container.Equals(TEXT("Array"), ESearchCase::IgnoreCase)) { PinType.ContainerType = EPinContainerType::Array; }
+        else if (Container.Equals(TEXT("Set"), ESearchCase::IgnoreCase)) { PinType.ContainerType = EPinContainerType::Set; }
+        else if (Container.Equals(TEXT("Map"), ESearchCase::IgnoreCase)) { PinType.ContainerType = EPinContainerType::Map; }
+    }
+
     // Create the variable
     FBlueprintEditorUtils::AddMemberVariable(Blueprint, FName(*VariableName), PinType);
 
@@ -1078,10 +1088,28 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
         }
         Node = FUnrealMCPCommonUtils::CreateSpawnActorNode(EventGraph, ActorClass, NodePosition);
     }
+    else if (NodeType == TEXT("variable_get"))
+    {
+        FString VariableName;
+        if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("variable_name"), VariableName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'variable_get' node requires params.variable_name"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateVariableGetNode(EventGraph, Blueprint, VariableName, NodePosition);
+    }
+    else if (NodeType == TEXT("make_transform"))
+    {
+        UFunction* MakeTransformFn = UKismetMathLibrary::StaticClass()->FindFunctionByName(TEXT("MakeTransform"));
+        if (!MakeTransformFn)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not find KismetMathLibrary::MakeTransform"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateFunctionCallNode(EventGraph, MakeTransformFn, NodePosition);
+    }
     else
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
-            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor)"), *NodeType));
+            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor|variable_get|make_transform)"), *NodeType));
     }
 
     if (!Node)

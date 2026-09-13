@@ -12,6 +12,8 @@
 #include "Components/SphereComponent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Logging/TokenizedMessage.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "UObject/Field.h"
@@ -841,12 +843,24 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Compile the blueprint
-    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    // Compile the blueprint, capturing the full results log so the caller can see errors.
+    FCompilerResultsLog Results;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Results);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
-    ResultObj->SetBoolField(TEXT("compiled"), true);
+    // "compiled" is only a success when there are zero errors (warnings are allowed).
+    ResultObj->SetBoolField(TEXT("compiled"), Results.NumErrors == 0);
+    ResultObj->SetNumberField(TEXT("num_errors"), Results.NumErrors);
+    ResultObj->SetNumberField(TEXT("num_warnings"), Results.NumWarnings);
+
+    TArray<TSharedPtr<FJsonValue>> MessagesArray;
+    for (const TSharedRef<FTokenizedMessage>& Message : Results.Messages)
+    {
+        MessagesArray.Add(MakeShared<FJsonValueString>(Message->ToText().ToString()));
+    }
+    ResultObj->SetArrayField(TEXT("messages"), MessagesArray);
+
     return ResultObj;
 }
 

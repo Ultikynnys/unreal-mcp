@@ -271,10 +271,11 @@ UK2Node_VariableGet* FUnrealMCPCommonUtils::CreateVariableGetNode(UEdGraph* Grap
     
     if (Property)
     {
-        VariableGetNode->VariableReference.SetFromField<FProperty>(Property, false);
+        VariableGetNode->VariableReference.SetSelfMember(VarName);
         VariableGetNode->NodePosX = Position.X;
         VariableGetNode->NodePosY = Position.Y;
         Graph->AddNode(VariableGetNode, true);
+        VariableGetNode->CreateNewGuid();
         VariableGetNode->PostPlacedNewNode();
         VariableGetNode->AllocateDefaultPins();
         
@@ -298,10 +299,11 @@ UK2Node_VariableSet* FUnrealMCPCommonUtils::CreateVariableSetNode(UEdGraph* Grap
     
     if (Property)
     {
-        VariableSetNode->VariableReference.SetFromField<FProperty>(Property, false);
+        VariableSetNode->VariableReference.SetSelfMember(VarName);
         VariableSetNode->NodePosX = Position.X;
         VariableSetNode->NodePosY = Position.Y;
         Graph->AddNode(VariableSetNode, true);
+        VariableSetNode->CreateNewGuid();
         VariableSetNode->PostPlacedNewNode();
         VariableSetNode->AllocateDefaultPins();
         
@@ -487,8 +489,15 @@ bool FUnrealMCPCommonUtils::ConnectGraphNodes(UEdGraph* Graph, UEdGraphNode* Sou
     
     if (SourcePin && TargetPin)
     {
-        SourcePin->MakeLinkTo(TargetPin);
-        return true;
+        // Route through the graph schema so wildcard pins (Cast.Object, ForEach.Array, ...)
+        // propagate their type and the link survives recompiles. A raw MakeLinkTo skips the
+        // schema's connection notifications and leaves those pins untyped ("undetermined").
+        const UEdGraphSchema* Schema = Graph->GetSchema();
+        if (Schema && Schema->TryCreateConnection(SourcePin, TargetPin))
+        {
+            return true;
+        }
+        return false;
     }
     
     return false;

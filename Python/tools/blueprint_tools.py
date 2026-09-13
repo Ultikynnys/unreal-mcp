@@ -255,7 +255,12 @@ def register_blueprint_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str
     ) -> Dict[str, Any]:
-        """Compile a Blueprint."""
+        """Compile a Blueprint.
+
+        Returns { compiled, num_errors, num_warnings, messages }. 'compiled' is true only
+        when there are zero errors, so ALWAYS check num_errors / messages before treating
+        a compile as successful.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:

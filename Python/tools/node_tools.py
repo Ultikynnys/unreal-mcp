@@ -237,17 +237,19 @@ def register_blueprint_node_tools(mcp: FastMCP):
         blueprint_name: str,
         variable_name: str,
         variable_type: str,
-        is_exposed: bool = False
+        is_exposed: bool = False,
+        container: str = ""
     ) -> Dict[str, Any]:
         """
         Add a variable to a Blueprint.
-        
+
         Args:
             blueprint_name: Name of the target Blueprint
             variable_name: Name of the variable
-            variable_type: Type of the variable (Boolean, Integer, Float, Vector, etc.)
+            variable_type: Element type (Boolean, Integer, Float, String, Vector)
             is_exposed: Whether to expose the variable to the editor
-            
+            container: Optional container type: "Array", "Set" or "Map"
+
         Returns:
             Response indicating success or failure
         """
@@ -258,7 +260,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
                 "blueprint_name": blueprint_name,
                 "variable_name": variable_name,
                 "variable_type": variable_type,
-                "is_exposed": is_exposed
+                "is_exposed": is_exposed,
+                "container": container
             }
             
             unreal = get_unreal_connection()
@@ -445,7 +448,9 @@ def register_blueprint_node_tools(mcp: FastMCP):
             - "cast"         : dynamic cast to a class (params.target_class required)
             - "custom_event" : a named custom event (params.event_name required)
             - "foreach"      : ForEachLoop macro (array element + loop body)
-            - "spawn_actor"  : SpawnActorFromClass (params.actor_class optional)
+            - "spawn_actor"  : BeginDeferredActorSpawnFromClass (params.actor_class optional)
+            - "variable_get" : get a variable (params.variable_name required)
+            - "make_transform": KismetMathLibrary::MakeTransform (Location/Rotation/Scale)
 
         Returns the node_id and its pins (name / direction / category) so they can be wired
         with connect_blueprint_nodes.
