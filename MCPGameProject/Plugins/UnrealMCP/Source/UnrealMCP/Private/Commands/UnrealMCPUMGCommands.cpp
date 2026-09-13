@@ -272,18 +272,26 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 		return Response;
 	}
 
-	// Create Button widget
-	UButton* Button = NewObject<UButton>(WidgetBlueprint->GeneratedClass->GetDefaultObject(), UButton::StaticClass(), *WidgetName);
+	// Construct widgets through the WidgetTree so the UMG compiler recognizes
+	// them as source widgets and generates stable variable GUIDs/properties.
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->WidgetTree->Modify();
+	UButton* Button = WidgetBlueprint->WidgetTree->ConstructWidget<UButton>(
+		UButton::StaticClass(), FName(*WidgetName));
 	if (!Button)
 	{
 		Response->SetStringField(TEXT("error"), TEXT("Failed to create Button widget"));
 		return Response;
 	}
+	WidgetBlueprint->OnVariableAdded(Button->GetFName());
 
 	// Set button text
-	UTextBlock* ButtonTextBlock = NewObject<UTextBlock>(Button, UTextBlock::StaticClass(), *(WidgetName + TEXT("_Text")));
+	const FName TextWidgetName(*(WidgetName + TEXT("_Text")));
+	UTextBlock* ButtonTextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(
+		UTextBlock::StaticClass(), TextWidgetName);
 	if (ButtonTextBlock)
 	{
+		WidgetBlueprint->OnVariableAdded(ButtonTextBlock->GetFName());
 		ButtonTextBlock->SetText(FText::FromString(ButtonText));
 		Button->AddChild(ButtonTextBlock);
 	}
@@ -371,24 +379,15 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		return Response;
 	}
 
-	// Create the event node (e.g., OnClicked for buttons)
-	UK2Node_Event* EventNode = nullptr;
-	
-	// Find existing nodes first
-	TArray<UK2Node_Event*> AllEventNodes;
-	FBlueprintEditorUtils::GetAllNodesOfClass<UK2Node_Event>(WidgetBlueprint, AllEventNodes);
-	
-	for (UK2Node_Event* Node : AllEventNodes)
-	{
-		if ((Node->CustomFunctionName == FName(*EventName) || Node->EventReference.GetMemberName() == FName(*EventName)) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
-		{
-			EventNode = Node;
-			break;
-		}
-	}
+	// Use the engine's component-bound-event lookup so duplicate detection matches
+	// the UMG designer's component/delegate identity rules.
+	const UK2Node_ComponentBoundEvent* ExistingEventNode =
+		FKismetEditorUtilities::FindBoundEventForComponent(
+			WidgetBlueprint, FName(*EventName), Widget->GetFName());
+	bool bEventNodeExists = ExistingEventNode != nullptr;
 
 	// If no existing node, create a new one
-	if (!EventNode)
+	if (!bEventNodeExists)
 	{
 		// Calculate position - place it below existing nodes
 		float MaxHeight = 0.0f;
@@ -410,17 +409,24 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 				TEXT("Widget '%s' has no bindable delegate '%s'"), *WidgetName, *EventName));
 			return Response;
 		}
-		// The generated class only carries a property for widgets flagged as
-		// variables - make this one a variable (the designer does this implicitly
-		// when you click a delegate) and regenerate the class.
+		// Marking a source widget as a variable and structurally modifying the
+		// Blueprint makes the UMG compiler generate its component property.
+		// Its GUID was registered when the widget was added to the WidgetTree.
+		Widget->Modify();
 		Widget->bIsVariable = true;
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
-		FObjectProperty* ComponentProp =
-			FindFProperty<FObjectProperty>(WidgetBlueprint->GeneratedClass, FName(*WidgetName));
+
+		FObjectProperty* ComponentProp = FindFProperty<FObjectProperty>(
+			WidgetBlueprint->SkeletonGeneratedClass, Widget->GetFName());
+		if (!ComponentProp && WidgetBlueprint->GeneratedClass)
+		{
+			ComponentProp = FindFProperty<FObjectProperty>(
+				WidgetBlueprint->GeneratedClass, Widget->GetFName());
+		}
 		if (!ComponentProp)
 		{
 			Response->SetStringField(TEXT("error"), FString::Printf(
-				TEXT("Widget '%s' has no generated component property"), *WidgetName));
+				TEXT("Widget '%s' has no generated component property after structural compilation"), *WidgetName));
 			return Response;
 		}
 		UK2Node_ComponentBoundEvent* BoundEvent =
@@ -429,27 +435,11 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		BoundEvent->NodePosX = NodePos.X;
 		BoundEvent->NodePosY = NodePos.Y;
 		EventGraph->AddNode(BoundEvent, /*bFromUI*/ true, /*bSelectNewNode*/ false);
-
-		// Now find the newly created node
-		TArray<UK2Node_Event*> UpdatedEventNodes;
-		FBlueprintEditorUtils::GetAllNodesOfClass<UK2Node_Event>(WidgetBlueprint, UpdatedEventNodes);
-		
-		for (UK2Node_Event* Node : UpdatedEventNodes)
-		{
-			if ((Node->CustomFunctionName == FName(*EventName) || Node->EventReference.GetMemberName() == FName(*EventName)) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
-			{
-				EventNode = Node;
-				
-				// Set position of the node
-				EventNode->NodePosX = NodePos.X;
-				EventNode->NodePosY = NodePos.Y;
-				
-				break;
-			}
-		}
+		BoundEvent->ReconstructNode();
+		bEventNodeExists = true;
 	}
 
-	if (!EventNode)
+	if (!bEventNodeExists)
 	{
 		Response->SetStringField(TEXT("error"), TEXT("Failed to create event node"));
 		return Response;
