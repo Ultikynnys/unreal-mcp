@@ -165,12 +165,17 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 		}
 	}
 
-	// Create Text Block widget
+	// Construct through the WidgetTree so the UMG compiler recognizes the widget
+	// as a source widget, and register it as a variable (the step the designer
+	// does implicitly when you add a widget) so it gets a stable variable GUID.
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->WidgetTree->Modify();
 	UTextBlock* TextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *WidgetName);
 	if (!TextBlock)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Text Block widget"));
 	}
+	WidgetBlueprint->OnVariableAdded(TextBlock->GetFName());
 
 	// Set initial text
 	TextBlock->SetText(FText::FromString(InitialText));
@@ -489,14 +494,20 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 		return Response;
 	}
 
-	// Create a variable for binding if it doesn't exist
-	FBlueprintEditorUtils::AddMemberVariable(
-		WidgetBlueprint,
-		FName(*BindingName),
-		FEdGraphPinType(UEdGraphSchema_K2::PC_Text, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType())
-	);
+	// Ensure the source variable exists on the generated class. The compiler
+	// resolves the binding source from the skeleton class, so the variable must
+	// be present there before the binding is registered.
+	if (!WidgetBlueprint->SkeletonGeneratedClass ||
+		!WidgetBlueprint->SkeletonGeneratedClass->FindPropertyByName(FName(*BindingName)))
+	{
+		FBlueprintEditorUtils::AddMemberVariable(
+			WidgetBlueprint,
+			FName(*BindingName),
+			FEdGraphPinType(UEdGraphSchema_K2::PC_Text, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType())
+		);
+	}
 
-	// Find the TextBlock widget
+	// Find the TextBlock widget we are binding to
 	UTextBlock* TextBlock = Cast<UTextBlock>(WidgetBlueprint->WidgetTree->FindWidget(FName(*WidgetName)));
 	if (!TextBlock)
 	{
@@ -504,48 +515,36 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 		return Response;
 	}
 
-	// Create binding function
-	const FString FunctionName = FString::Printf(TEXT("Get%s"), *BindingName);
-	UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
-		WidgetBlueprint,
-		FName(*FunctionName),
-		UEdGraph::StaticClass(),
-		UEdGraphSchema_K2::StaticClass()
-	);
-
-	if (FuncGraph)
+	FProperty* SourceProperty = WidgetBlueprint->SkeletonGeneratedClass
+		? WidgetBlueprint->SkeletonGeneratedClass->FindPropertyByName(FName(*BindingName))
+		: nullptr;
+	if (!SourceProperty)
 	{
-		// Add the function to the blueprint with proper template parameter
-		// Template requires null for last parameter when not using a signature-source
-		FBlueprintEditorUtils::AddFunctionGraph<UClass>(WidgetBlueprint, FuncGraph, false, nullptr);
-
-		// Create entry node
-		UK2Node_FunctionEntry* EntryNode = nullptr;
-		
-		// Create entry node - use the API that exists in UE 5.5
-		EntryNode = NewObject<UK2Node_FunctionEntry>(FuncGraph);
-		FuncGraph->AddNode(EntryNode, false, false);
-		EntryNode->NodePosX = 0;
-		EntryNode->NodePosY = 0;
-		EntryNode->FunctionReference.SetExternalMember(FName(*FunctionName), WidgetBlueprint->GeneratedClass);
-		EntryNode->AllocateDefaultPins();
-
-		// Create get variable node
-		UK2Node_VariableGet* GetVarNode = NewObject<UK2Node_VariableGet>(FuncGraph);
-		GetVarNode->VariableReference.SetSelfMember(FName(*BindingName));
-		FuncGraph->AddNode(GetVarNode, false, false);
-		GetVarNode->NodePosX = 200;
-		GetVarNode->NodePosY = 0;
-		GetVarNode->AllocateDefaultPins();
-
-		// Connect nodes
-		UEdGraphPin* EntryThenPin = EntryNode->FindPin(UEdGraphSchema_K2::PN_Then);
-		UEdGraphPin* GetVarOutPin = GetVarNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-		if (EntryThenPin && GetVarOutPin)
-		{
-			EntryThenPin->MakeLinkTo(GetVarOutPin);
-		}
+		Response->SetStringField(TEXT("error"), FString::Printf(
+			TEXT("Source property '%s' could not be created on the generated class"), *BindingName));
+		return Response;
 	}
+
+	// Register the property binding TextBlock.Text -> <BindingName>, the same
+	// binding the UMG designer creates when you drag a variable onto a property.
+	// (The previous implementation built a function graph whose duplicate entry
+	// node made the Blueprint fail to compile.)
+	TArray<FFieldVariant> FieldChain;
+	FieldChain.Add(FFieldVariant(SourceProperty));
+
+	FDelegateEditorBinding Binding;
+	Binding.ObjectName = WidgetName;
+	Binding.PropertyName = FName(TEXT("Text"));
+	Binding.Kind = EBindingKind::Property;
+	Binding.SourceProperty = SourceProperty->GetFName();
+	Binding.SourcePath = FEditorPropertyPath(FieldChain);
+	UBlueprint::GetGuidFromClassByFieldName<FProperty>(
+		WidgetBlueprint->SkeletonGeneratedClass, SourceProperty->GetFName(), Binding.MemberGuid);
+
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->Bindings.Remove(Binding);
+	WidgetBlueprint->Bindings.AddUnique(Binding);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 
 	// Save the Widget Blueprint
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
