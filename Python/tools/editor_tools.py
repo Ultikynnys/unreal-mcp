@@ -73,7 +73,8 @@ def register_editor_tools(mcp: FastMCP):
         name: str,
         type: str,
         location: List[float] = [0.0, 0.0, 0.0],
-        rotation: List[float] = [0.0, 0.0, 0.0]
+        rotation: List[float] = [0.0, 0.0, 0.0],
+        allow_duplicate: bool = False
     ) -> Dict[str, Any]:
         """Create a new actor in the current level.
         
@@ -100,7 +101,8 @@ def register_editor_tools(mcp: FastMCP):
                 "name": name,
                 "type": type.upper(),  # Make sure type is uppercase
                 "location": location,
-                "rotation": rotation
+                "rotation": rotation,
+                "allow_duplicate": allow_duplicate
             }
             
             # Validate location and rotation formats
@@ -123,8 +125,8 @@ def register_editor_tools(mcp: FastMCP):
             logger.info(f"Actor creation response: {response}")
             
             # Handle error responses correctly
-            if response.get("status") == "error":
-                error_message = response.get("error", "Unknown error")
+            if response.get("success") is False:
+                error_message = response.get("message", "Unknown error")
                 logger.error(f"Error creating actor: {error_message}")
                 return {"success": False, "message": error_message}
             
@@ -290,7 +292,7 @@ def register_editor_tools(mcp: FastMCP):
             
         except Exception as e:
             logger.error(f"Error focusing viewport: {e}")
-            return {"status": "error", "message": str(e)}
+            return {"success": False, "message": str(e)}
 
     @mcp.tool()
     def spawn_blueprint_actor(
@@ -424,7 +426,8 @@ def register_editor_tools(mcp: FastMCP):
         location: Optional[List[float]] = None,
         rotation: Optional[List[float]] = None,
         scale: Optional[List[float]] = None,
-        folder_path: Optional[str] = None
+        folder_path: Optional[str] = None,
+        allow_duplicate: bool = False
     ) -> Dict[str, Any]:
         """Spawn a StaticMeshActor with a specific static mesh asset into the current level."""
         from unreal_mcp_server import get_unreal_connection
@@ -438,7 +441,8 @@ def register_editor_tools(mcp: FastMCP):
                 "location": location or [0.0, 0.0, 0.0],
                 "rotation": rotation or [0.0, 0.0, 0.0],
                 "scale": scale or [1.0, 1.0, 1.0],
-                "folder_path": folder_path
+                "folder_path": folder_path,
+                "allow_duplicate": allow_duplicate
             }
             return unreal.send_command("spawn_mesh_actor", params)
         except Exception as e:
@@ -708,6 +712,42 @@ def register_editor_tools(mcp: FastMCP):
                 "slot_index": slot_index
             }
             return unreal.send_command("set_actor_material", params)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def reload_server(ctx: Context) -> Dict[str, Any]:
+        """Hot-reload the Unreal-side server module in place (no editor restart needed)."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("reload_server", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def delete_level(ctx: Context, map_path: str, force: bool = False) -> Dict[str, Any]:
+        """Delete a level asset; refuses to delete the currently open level unless force=True."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("delete_level", {"map_path": map_path, "force": force})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def delete_actors_by_prefix(ctx: Context, prefix: str) -> Dict[str, Any]:
+        """Delete every actor in the level whose label starts with the given prefix."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("delete_actors_by_prefix", {"prefix": prefix})
         except Exception as e:
             return {"success": False, "message": str(e)}
 

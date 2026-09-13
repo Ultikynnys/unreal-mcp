@@ -158,22 +158,23 @@ class UnrealConnection:
             # Log complete response for debugging
             logger.info(f"Complete response from Unreal: {response}")
             
-            # Check for both error formats: {"status": "error", ...} and {"success": false, ...}
-            if response.get("status") == "error":
-                error_message = response.get("error") or response.get("message", "Unknown Unreal error")
-                logger.error(f"Unreal error (status=error): {error_message}")
-                # We want to preserve the original error structure but ensure error is accessible
-                if "error" not in response:
-                    response["error"] = error_message
-            elif response.get("success") is False:
-                # This format uses {"success": false, "error": "message"} or {"success": false, "message": "message"}
-                error_message = response.get("error") or response.get("message", "Unknown Unreal error")
-                logger.error(f"Unreal error (success=false): {error_message}")
-                # Convert to the standard format expected by higher layers
-                response = {
-                    "status": "error",
-                    "error": error_message
-                }
+            # Normalize every backend reply to ONE canonical envelope:
+            #   {"success": bool, "result": Any, "message": str}
+            if isinstance(response, dict):
+                if response.get("status") == "error" or response.get("success") is False:
+                    error_message = response.get("error") or response.get("message", "Unknown Unreal error")
+                    logger.error(f"Unreal error: {error_message}")
+                    response = {
+                        "success": False,
+                        "result": response.get("result"),
+                        "message": error_message
+                    }
+                else:
+                    response = {
+                        "success": True,
+                        "result": response.get("result"),
+                        "message": response.get("message", "")
+                    }
             
             # Always close the connection after command is complete
             # since Unreal will close it on its side anyway
@@ -196,8 +197,9 @@ class UnrealConnection:
                 pass
             self.socket = None
             return {
-                "status": "error",
-                "error": str(e)
+                "success": False,
+                "result": None,
+                "message": str(e)
             }
 
 # Global connection state
