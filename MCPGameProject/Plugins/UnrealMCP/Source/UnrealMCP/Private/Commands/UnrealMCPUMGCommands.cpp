@@ -26,6 +26,61 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_Event.h"
 #include "K2Node_ComponentBoundEvent.h"
+#include "Misc/PackageName.h"
+
+namespace
+{
+	// Resolve a Widget Blueprint from either a full object path or a bare asset
+	// name. Bare names are tried under /Game/Widgets first (the default location),
+	// then anywhere else under /Game, so widgets created with a custom 'path' can
+	// still be addressed by name.
+	static UWidgetBlueprint* FindWidgetBlueprintByName(const FString& WidgetName)
+	{
+		if (WidgetName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		// Explicit asset path supplied by the caller (e.g. "/Game/MyUI/WBP_Foo").
+		if (WidgetName.StartsWith(TEXT("/")))
+		{
+			if (UWidgetBlueprint* AsWidget = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(WidgetName)))
+			{
+				return AsWidget;
+			}
+			const FString ShortName = FPackageName::GetShortName(WidgetName);
+			if (UWidgetBlueprint* AsWidget = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FString::Printf(TEXT("%s.%s"), *WidgetName, *ShortName))))
+			{
+				return AsWidget;
+			}
+			return nullptr;
+		}
+
+		// Default location first.
+		if (UWidgetBlueprint* AsWidget = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FString::Printf(TEXT("/Game/Widgets/%s"), *WidgetName))))
+		{
+			return AsWidget;
+		}
+
+		// Otherwise search the whole content tree for a widget with this name.
+		// ListAssets returns object paths ("/Game/Dir/Name.Name"), so match either
+		// the package short-name or the object-name form.
+		const FString Suffix = FString::Printf(TEXT("/%s"), *WidgetName);
+		const FString ObjectSuffix = FString::Printf(TEXT("/%s.%s"), *WidgetName, *WidgetName);
+		for (const FString& AssetPath : UEditorAssetLibrary::ListAssets(TEXT("/Game"), true, false))
+		{
+			if (AssetPath.EndsWith(Suffix, ESearchCase::CaseSensitive) || AssetPath.EndsWith(ObjectSuffix, ESearchCase::CaseSensitive))
+			{
+				if (UWidgetBlueprint* AsWidget = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(AssetPath)))
+				{
+					return AsWidget;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+}
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
 {
@@ -70,10 +125,20 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
 	}
 
-	// Create the full asset path
+	// Create the full asset path. 'path' is optional and defaults to
+	// /Game/Widgets; leading and trailing slashes are normalized.
 	FString PackagePath = TEXT("/Game/Widgets/");
-	FString AssetName = BlueprintName;
-	FString FullPath = PackagePath + AssetName;
+	Params->TryGetStringField(TEXT("path"), PackagePath);
+	if (!PackagePath.StartsWith(TEXT("/")))
+	{
+		PackagePath = TEXT("/Game/") + PackagePath;
+	}
+	if (!PackagePath.EndsWith(TEXT("/")))
+	{
+		PackagePath += TEXT("/");
+	}
+	const FString AssetName = BlueprintName;
+	const FString FullPath = PackagePath + AssetName;
 
 	// Check if asset already exists
 	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
@@ -142,9 +207,8 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
 	}
 
-	// Find the Widget Blueprint
-	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
+	// Find the Widget Blueprint (by bare name anywhere under /Game, or by path)
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprintByName(BlueprintName);
 	if (!WidgetBlueprint)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
@@ -210,9 +274,8 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddWidgetToViewport(const T
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
 	}
 
-	// Find the Widget Blueprint
-	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
+	// Find the Widget Blueprint (by bare name anywhere under /Game, or by path)
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprintByName(BlueprintName);
 	if (!WidgetBlueprint)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
@@ -268,14 +331,14 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Load the Widget Blueprint (by bare name anywhere under /Game, or by path)
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprintByName(BlueprintName);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName));
 		return Response;
 	}
+	const FString BlueprintPath = WidgetBlueprint->GetOutermost()->GetName();
 
 	// Construct widgets through the WidgetTree so the UMG compiler recognizes
 	// them as source widgets and generates stable variable GUIDs/properties.
@@ -359,14 +422,14 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Load the Widget Blueprint (by bare name anywhere under /Game, or by path)
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprintByName(BlueprintName);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName));
 		return Response;
 	}
+	const FString BlueprintPath = WidgetBlueprint->GetOutermost()->GetName();
 
 	// Create the event graph if it doesn't exist
 	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(WidgetBlueprint);
@@ -485,14 +548,14 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Load the Widget Blueprint (by bare name anywhere under /Game, or by path)
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprintByName(BlueprintName);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName));
 		return Response;
 	}
+	const FString BlueprintPath = WidgetBlueprint->GetOutermost()->GetName();
 
 	// Ensure the source variable exists on the generated class. The compiler
 	// resolves the binding source from the skeleton class, so the variable must

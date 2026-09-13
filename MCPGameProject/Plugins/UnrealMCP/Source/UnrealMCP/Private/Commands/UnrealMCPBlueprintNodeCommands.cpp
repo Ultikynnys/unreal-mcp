@@ -872,11 +872,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
+    // node_type is optional: an empty value means "every node in the event graph".
     FString NodeType;
-    if (!Params->TryGetStringField(TEXT("node_type"), NodeType))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_type' parameter"));
-    }
+    Params->TryGetStringField(TEXT("node_type"), NodeType);
 
     // Find the blueprint
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
@@ -901,21 +899,42 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
         FString EventName;
         if (!Params->TryGetStringField(TEXT("event_name"), EventName))
         {
-            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'event_name' parameter for Event node search"));
+            // Fall back to the alias the Python wrapper also sends.
+            Params->TryGetStringField(TEXT("event_type"), EventName);
         }
         
         // Look for nodes with exact event name (e.g., ReceiveBeginPlay)
         for (UEdGraphNode* Node : EventGraph->Nodes)
         {
             UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
-            if (EventNode && EventNode->EventReference.GetMemberName() == FName(*EventName))
+            if (EventNode && (EventName.IsEmpty() || EventNode->EventReference.GetMemberName() == FName(*EventName)))
             {
-                UE_LOG(LogTemp, Display, TEXT("Found event node with name %s: %s"), *EventName, *EventNode->NodeGuid.ToString());
                 NodeGuidArray.Add(MakeShared<FJsonValueString>(EventNode->NodeGuid.ToString()));
             }
         }
     }
-    // Add other node types as needed (InputAction, etc.)
+    else if (NodeType.Equals(TEXT("Function"), ESearchCase::IgnoreCase))
+    {
+        // Function-call nodes
+        for (UEdGraphNode* Node : EventGraph->Nodes)
+        {
+            if (Node && Node->IsA(UK2Node_CallFunction::StaticClass()))
+            {
+                NodeGuidArray.Add(MakeShared<FJsonValueString>(Node->NodeGuid.ToString()));
+            }
+        }
+    }
+    else
+    {
+        // Missing / "All" / unknown node_type: return every node instead of failing.
+        for (UEdGraphNode* Node : EventGraph->Nodes)
+        {
+            if (Node)
+            {
+                NodeGuidArray.Add(MakeShared<FJsonValueString>(Node->NodeGuid.ToString()));
+            }
+        }
+    }
     
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("node_guids"), NodeGuidArray);
