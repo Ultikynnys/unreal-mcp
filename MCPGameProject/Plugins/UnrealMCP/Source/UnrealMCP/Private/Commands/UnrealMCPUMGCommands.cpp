@@ -25,6 +25,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_Event.h"
+#include "K2Node_ComponentBoundEvent.h"
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
 {
@@ -93,7 +94,7 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 		Package,                     // Outer package
 		FName(*AssetName),           // Blueprint name
 		BPTYPE_Normal,               // Blueprint type
-		UBlueprint::StaticClass(),   // Blueprint class
+		UWidgetBlueprint::StaticClass(), // Blueprint class
 		UBlueprintGeneratedClass::StaticClass(), // Generated class
 		FName("CreateUMGWidget")     // Creation method name
 	);
@@ -379,7 +380,7 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 	
 	for (UK2Node_Event* Node : AllEventNodes)
 	{
-		if (Node->CustomFunctionName == FName(*EventName) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
+		if ((Node->CustomFunctionName == FName(*EventName) || Node->EventReference.GetMemberName() == FName(*EventName)) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
 		{
 			EventNode = Node;
 			break;
@@ -398,14 +399,36 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		
 		const FVector2D NodePos(200, MaxHeight + 200);
 
-		// Call CreateNewBoundEventForClass, which returns void, so we can't capture the return value directly
-		// We'll need to find the node after creating it
-		FKismetEditorUtilities::CreateNewBoundEventForClass(
-			Widget->GetClass(),
-			FName(*EventName),
-			WidgetBlueprint,
-			nullptr  // We don't need a specific property binding
-		);
+		// Bind via a component-bound delegate event - the same node the UMG
+		// designer creates when you click "OnClicked" on a button
+		// (CreateNewBoundEventForClass does not produce a node for widget delegates).
+		FMulticastDelegateProperty* DelegateProp =
+			FindFProperty<FMulticastDelegateProperty>(Widget->GetClass(), FName(*EventName));
+		if (!DelegateProp)
+		{
+			Response->SetStringField(TEXT("error"), FString::Printf(
+				TEXT("Widget '%s' has no bindable delegate '%s'"), *WidgetName, *EventName));
+			return Response;
+		}
+		// The generated class only carries a property for widgets flagged as
+		// variables - make this one a variable (the designer does this implicitly
+		// when you click a delegate) and regenerate the class.
+		Widget->bIsVariable = true;
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+		FObjectProperty* ComponentProp =
+			FindFProperty<FObjectProperty>(WidgetBlueprint->GeneratedClass, FName(*WidgetName));
+		if (!ComponentProp)
+		{
+			Response->SetStringField(TEXT("error"), FString::Printf(
+				TEXT("Widget '%s' has no generated component property"), *WidgetName));
+			return Response;
+		}
+		UK2Node_ComponentBoundEvent* BoundEvent =
+			NewObject<UK2Node_ComponentBoundEvent>(EventGraph);
+		BoundEvent->InitializeComponentBoundEventParams(ComponentProp, DelegateProp);
+		BoundEvent->NodePosX = NodePos.X;
+		BoundEvent->NodePosY = NodePos.Y;
+		EventGraph->AddNode(BoundEvent, /*bFromUI*/ true, /*bSelectNewNode*/ false);
 
 		// Now find the newly created node
 		TArray<UK2Node_Event*> UpdatedEventNodes;
@@ -413,7 +436,7 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		
 		for (UK2Node_Event* Node : UpdatedEventNodes)
 		{
-			if (Node->CustomFunctionName == FName(*EventName) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
+			if ((Node->CustomFunctionName == FName(*EventName) || Node->EventReference.GetMemberName() == FName(*EventName)) && Node->EventReference.GetMemberParentClass() == Widget->GetClass())
 			{
 				EventNode = Node;
 				

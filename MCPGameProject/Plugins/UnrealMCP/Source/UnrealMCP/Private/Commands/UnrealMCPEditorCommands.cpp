@@ -607,7 +607,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActorsByPrefix(con
     TArray<AActor*> ToDelete;
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetActorLabel().StartsWith(Prefix))
+        if (Actor && (Actor->GetActorLabel().StartsWith(Prefix) || Actor->GetName().StartsWith(Prefix)))
         {
             ToDelete.Add(Actor);
         }
