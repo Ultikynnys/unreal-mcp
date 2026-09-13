@@ -624,7 +624,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                         {
                             UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Found enum value: %lld"), EnumValue);
                             EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(
-                                ComponentTemplate, 
+                                EnumProp->ContainerPtrToValuePtr<void>(ComponentTemplate), 
                                 EnumValue
                             );
                             bSuccess = true;
@@ -658,7 +658,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                     int64 EnumValue = JsonValue->AsNumber();
                     UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting enum from number: %lld"), EnumValue);
                     EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(
-                        ComponentTemplate, 
+                        EnumProp->ContainerPtrToValuePtr<void>(ComponentTemplate), 
                         EnumValue
                     );
                     bSuccess = true;
@@ -682,13 +682,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                     
                     if (NumericProp->IsInteger())
                     {
-                        NumericProp->SetIntPropertyValue(ComponentTemplate, (int64)Value);
+                        NumericProp->SetIntPropertyValue(NumericProp->ContainerPtrToValuePtr<void>(ComponentTemplate), (int64)Value);
                         UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Set integer value: %lld"), (int64)Value);
                         bSuccess = true;
                     }
                     else if (NumericProp->IsFloatingPoint())
                     {
-                        NumericProp->SetFloatingPointPropertyValue(ComponentTemplate, Value);
+                        NumericProp->SetFloatingPointPropertyValue(NumericProp->ContainerPtrToValuePtr<void>(ComponentTemplate), Value);
                         UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Set float value: %f"), Value);
                         bSuccess = true;
                     }
