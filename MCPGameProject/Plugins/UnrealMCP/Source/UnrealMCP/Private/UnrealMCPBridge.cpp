@@ -263,7 +263,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     ReloadServer();
                     ResultJson = MakeShareable(new FJsonObject);
                     ResultJson->SetBoolField(TEXT("success"), true);
-                    ResultJson->SetStringField(TEXT("message"), TEXT("Server reload scheduled"));
+                    ResultJson->SetStringField(TEXT("message"), TEXT("Reload acknowledged; listener kept bound (C++ bridge has no hot-reload)"));
                 }
                 else
                 {
@@ -383,7 +383,10 @@ void UUnrealMCPBridge::ReloadServer()
 
 void UUnrealMCPBridge::RestartServerDeferred()
 {
-    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Reloading server..."));
-    StopServer();
-    StartServer();
+    // The C++ bridge cannot hot-reload its own module, and tearing the listener
+    // down here (StopServer + StartServer) frees :55557 for about a second. The
+    // in-editor Python MCP server started by init_unreal.py grabs it in that
+    // window and silently takes over the backend, so the C++ bridge stopped
+    // answering after every reload. Keep the already-bound listener alive instead.
+    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Reload requested - listener kept bound (C++ bridge has no hot-reload)"));
 }
