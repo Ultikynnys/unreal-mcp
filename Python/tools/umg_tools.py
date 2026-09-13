@@ -40,7 +40,9 @@ def register_umg_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            # The C++ handler reads the blueprint name from "name" (not "widget_name").
             params = {
+                "name": widget_name,
                 "widget_name": widget_name,
                 "parent_class": parent_class,
                 "path": path
@@ -95,8 +97,11 @@ def register_umg_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            # C++ expects the target widget blueprint as "blueprint_name" and the
+            # new child widget as "widget_name".
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": widget_name,
+                "widget_name": text_block_name,
                 "text_block_name": text_block_name,
                 "text": text,
                 "position": position,
@@ -156,8 +161,11 @@ def register_umg_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            # C++ expects the target widget blueprint as "blueprint_name" and the
+            # new button child as "widget_name".
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": widget_name,
+                "widget_name": button_name,
                 "button_name": button_name,
                 "text": text,
                 "position": position,
@@ -214,8 +222,11 @@ def register_umg_tools(mcp: FastMCP):
             if not function_name:
                 function_name = f"{widget_component_name}_{event_name}"
             
+            # C++ expects the target widget blueprint as "blueprint_name" and the
+            # component to bind as "widget_name".
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": widget_name,
+                "widget_name": widget_component_name,
                 "widget_component_name": widget_component_name,
                 "event_name": event_name,
                 "function_name": function_name
@@ -260,7 +271,9 @@ def register_umg_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            # C++ expects the target widget blueprint as "blueprint_name".
             params = {
+                "blueprint_name": widget_name,
                 "widget_name": widget_name,
                 "z_order": z_order
             }
@@ -308,9 +321,13 @@ def register_umg_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            # C++ expects the widget blueprint as "blueprint_name", the text block as
+            # "widget_name", and the binding variable as "binding_name".
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": widget_name,
+                "widget_name": text_block_name,
                 "text_block_name": text_block_name,
+                "binding_name": binding_property,
                 "binding_property": binding_property,
                 "binding_type": binding_type
             }

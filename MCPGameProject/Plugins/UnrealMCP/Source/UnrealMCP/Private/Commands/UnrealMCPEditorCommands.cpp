@@ -1272,11 +1272,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     SpawnTransform.SetScale3D(Scale);
 
     FActorSpawnParameters SpawnParams;
-    SpawnParams.Name = *ActorName;
-
+    // Do NOT force SpawnParams.Name: in the editor world a name clash raises a
+    // modal "name already in use" dialog on the game thread, which blocks the
+    // bridge and makes the command time out. Let UE pick a unique name and set
+    // the display label afterwards instead.
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
+        NewActor->SetActorLabel(*ActorName);
         return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
     }
 

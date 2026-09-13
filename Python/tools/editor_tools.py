@@ -44,7 +44,7 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def find_actors_by_name(ctx: Context, pattern: str) -> List[str]:
+    def find_actors_by_name(ctx: Context, pattern: str) -> List[Dict[str, Any]]:
         """Find actors by name pattern."""
         from unreal_mcp_server import get_unreal_connection
         
@@ -61,7 +61,10 @@ def register_editor_tools(mcp: FastMCP):
             if not response:
                 return []
                 
-            return response.get("actors", [])
+            # Backend replies are normalized to {"success", "result", "message"};
+            # the actor array lives under result.actors, not at the top level.
+            result = response.get("result") or {}
+            return result.get("actors", [])
             
         except Exception as e:
             logger.error(f"Error finding actors: {e}")

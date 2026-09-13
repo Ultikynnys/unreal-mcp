@@ -401,10 +401,12 @@ def register_blueprint_node_tools(mcp: FastMCP):
         from unreal_mcp_server import get_unreal_connection
         
         try:
+            # C++ reads the event name from "event_name" (not "event_type").
             params = {
                 "blueprint_name": blueprint_name,
                 "node_type": node_type,
-                "event_type": event_type
+                "event_type": event_type,
+                "event_name": event_type
             }
             
             unreal = get_unreal_connection()
