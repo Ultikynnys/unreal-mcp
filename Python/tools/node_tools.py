@@ -19,7 +19,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         event_name: str,
-        node_position = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -77,7 +77,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         action_name: str,
-        node_position = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -133,8 +133,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
         blueprint_name: str,
         target: str,
         function_name: str,
-        params = None,
-        node_position = None,
+        params: Optional[Dict[str, Any]] = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -305,7 +305,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         component_name: str,
-        node_position = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -360,7 +360,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
     def add_blueprint_self_reference(
         ctx: Context,
         blueprint_name: str,
-        node_position = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -466,7 +466,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         blueprint_name: str,
         node_type: str,
         params: Optional[Dict[str, Any]] = None,
-        node_position = None,
+        node_position: Optional[List[float]] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """Add a control-flow / special node to a Blueprint's graph.
