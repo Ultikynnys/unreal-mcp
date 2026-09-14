@@ -5,19 +5,28 @@ A simple MCP server for interacting with Unreal Engine.
 """
 
 import logging
+import os
 import socket
 import sys
 import json
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+
+# Resolve imports and the log file relative to this file, so the server works regardless of
+# the launcher's working directory (e.g. a bare interpreter instead of `uv run --directory`).
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 # Configure logging with more detailed format
 logging.basicConfig(
     level=logging.DEBUG,  # Change to DEBUG level for more details
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
-        logging.FileHandler('unreal_mcp.log'),
+        logging.FileHandler(os.path.join(_SERVER_DIR, 'unreal_mcp.log')),
         # logging.StreamHandler(sys.stdout) # Remove this handler to unexpected non-whitespace characters in JSON
     ]
 )
@@ -373,7 +382,54 @@ def info():
     - Clean up resources on errors
     """
 
+def _process_alive(pid: int) -> bool:
+    """Best-effort liveness check for another process (Windows + POSIX)."""
+    if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_orphan_watchdog(poll_seconds: float = 4.0) -> None:
+    """Exit once the launcher that spawned this stdio server is gone.
+
+    The MCP bridge (re)spawns the server and does not always reap the previous process tree,
+    so orphaned servers would otherwise keep running and pile up. The launcher stays alive
+    for as long as it owns our stdio pipes, so when the parent dies we are orphaned and quit.
+    """
+    parent_pid = os.getppid()
+
+    def _watch() -> None:
+        while True:
+            time.sleep(poll_seconds)
+            if not _process_alive(parent_pid) or os.getppid() != parent_pid:
+                logger.warning("Launcher (pid %s) is gone; exiting orphaned MCP server", parent_pid)
+                logging.shutdown()
+                os._exit(0)
+
+    threading.Thread(target=_watch, name="mcp-orphan-watchdog", daemon=True).start()
+
+
 # Run the server
 if __name__ == "__main__":
     logger.info("Starting MCP server with stdio transport")
+    _start_orphan_watchdog()
     mcp.run(transport='stdio') 
