@@ -157,10 +157,101 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprint(const FString& BlueprintName)
     return FindBlueprintByName(BlueprintName);
 }
 
-UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintName)
+UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& InBlueprintName)
 {
-    FString AssetPath = TEXT("/Game/Blueprints/") + BlueprintName;
-    return LoadObject<UBlueprint>(nullptr, *AssetPath);
+    if (InBlueprintName.IsEmpty())
+    {
+        return nullptr;
+    }
+
+    FString BlueprintName = InBlueprintName.TrimStartAndEnd();
+
+    // Clean up any duplicate slashes right away
+    while (BlueprintName.Contains(TEXT("//")))
+    {
+        BlueprintName = BlueprintName.Replace(TEXT("//"), TEXT("/"));
+    }
+
+    // 1. If caller passed a package path or asset path (starts with "/")
+    if (BlueprintName.StartsWith(TEXT("/")))
+    {
+        // Try UEditorAssetLibrary::LoadAsset first as it loads unloaded packages into memory properly
+        UObject* LoadedObj = UEditorAssetLibrary::LoadAsset(BlueprintName);
+        if (UBlueprint* BP = Cast<UBlueprint>(LoadedObj))
+        {
+            return BP;
+        }
+
+        // Try LoadObject with full dot path
+        FString FullAssetPath = BlueprintName;
+        if (!FullAssetPath.Contains(TEXT(".")))
+        {
+            FullAssetPath = FullAssetPath + TEXT(".") + FPaths::GetBaseFilename(FullAssetPath);
+        }
+        if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *FullAssetPath))
+        {
+            return BP;
+        }
+
+        // If it starts with "/" and direct load failed, do NOT prepend /Game/Blueprints/!
+        // Instead, search Asset Registry by base asset name:
+        FString BaseName = FPaths::GetBaseFilename(BlueprintName);
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+        IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+        FARFilter Filter;
+        Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+        Filter.bRecursiveClasses = true;
+
+        TArray<FAssetData> AssetDataList;
+        AssetRegistry.GetAssets(Filter, AssetDataList);
+
+        for (const FAssetData& AssetData : AssetDataList)
+        {
+            if (AssetData.AssetName.ToString().Equals(BaseName, ESearchCase::IgnoreCase))
+            {
+                return Cast<UBlueprint>(AssetData.GetAsset());
+            }
+        }
+
+        return nullptr;
+    }
+
+    // 2. Simple name passed (no leading slash):
+    // First try standard /Game/Blueprints/<Name>
+    FString DefaultPath = TEXT("/Game/Blueprints/") + BlueprintName;
+    UObject* LoadedObj = UEditorAssetLibrary::LoadAsset(DefaultPath);
+    if (UBlueprint* BP = Cast<UBlueprint>(LoadedObj))
+    {
+        return BP;
+    }
+
+    FString FullDefaultPath = DefaultPath + TEXT(".") + BlueprintName;
+    if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *FullDefaultPath))
+    {
+        return BP;
+    }
+
+    // 3. Fall back to searching across the entire Asset Registry for this name anywhere under /Game
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+    Filter.bRecursiveClasses = true;
+
+    TArray<FAssetData> AssetDataList;
+    AssetRegistry.GetAssets(Filter, AssetDataList);
+
+    for (const FAssetData& AssetData : AssetDataList)
+    {
+        if (AssetData.AssetName.ToString().Equals(BlueprintName, ESearchCase::IgnoreCase))
+        {
+            return Cast<UBlueprint>(AssetData.GetAsset());
+        }
+    }
+
+    return nullptr;
 }
 
 UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)

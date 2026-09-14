@@ -81,6 +81,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
     // Check if blueprint already exists
     FString PackagePath = TEXT("/Game/Blueprints/");
     FString AssetName = BlueprintName;
+    if (BlueprintName.StartsWith(TEXT("/")))
+    {
+        PackagePath = FPaths::GetPath(BlueprintName) + TEXT("/");
+        AssetName = FPaths::GetBaseFilename(BlueprintName);
+    }
+    while (PackagePath.Contains(TEXT("//")))
+    {
+        PackagePath = PackagePath.Replace(TEXT("//"), TEXT("/"));
+    }
     if (UEditorAssetLibrary::DoesAssetExist(PackagePath + AssetName))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));

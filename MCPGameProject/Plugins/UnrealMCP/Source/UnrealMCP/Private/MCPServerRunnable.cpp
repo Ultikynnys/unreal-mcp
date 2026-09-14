@@ -65,8 +65,13 @@ uint32 FMCPServerRunnable::Run()
                             break;
                         }
 
-                        // Convert received data to string
-                        Buffer[BytesRead] = '\0';
+                        // Convert received data to string. Only terminate within the
+                        // buffer: a full 8192-byte read would otherwise write Buffer[8192]
+                        // one past the end (stack buffer overrun).
+                        if (BytesRead < (int32)sizeof(Buffer))
+                        {
+                            Buffer[BytesRead] = '\0';
+                        }
                         FString ReceivedText = UTF8_TO_TCHAR(Buffer);
                         UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Received: %s"), *ReceivedText);
 
@@ -80,15 +85,30 @@ uint32 FMCPServerRunnable::Run()
                             FString CommandType;
                             if (JsonObject->TryGetStringField(TEXT("type"), CommandType))
                             {
-                                // Execute command
-                                FString Response = Bridge->ExecuteCommand(CommandType, JsonObject->GetObjectField(TEXT("params")));
+                                // Execute command. Guard against a missing or non-object
+                                // 'params' field: GetObjectField() yields an invalid object
+                                // for those, and every handler dereferences it (null crash).
+                                TSharedPtr<FJsonObject> CommandParams;
+                                const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
+                                if (JsonObject->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr)
+                                {
+                                    CommandParams = *ParamsPtr;
+                                }
+                                else
+                                {
+                                    CommandParams = MakeShared<FJsonObject>();
+                                }
+                                FString Response = Bridge->ExecuteCommand(CommandType, CommandParams);
                                 
                                 // Log response for debugging
                                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
                                 
-                                // Send response
+                                // Send response. Send the UTF-8 byte count, not the TCHAR
+                                // count: for any non-ASCII character those differ and the old
+                                // code truncated the response (client reads partial JSON).
+                                FTCHARToUTF8 Utf8Response(*Response);
                                 int32 BytesSent = 0;
-                                if (!ClientSocket->Send((uint8*)TCHAR_TO_UTF8(*Response), Response.Len(), BytesSent))
+                                if (!ClientSocket->Send((const uint8*)Utf8Response.Get(), Utf8Response.Length(), BytesSent))
                                 {
                                     UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Failed to send response"));
                                 }
