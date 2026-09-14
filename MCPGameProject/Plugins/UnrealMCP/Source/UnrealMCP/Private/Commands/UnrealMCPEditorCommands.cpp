@@ -279,7 +279,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("create_level"), TEXT("save_level"), TEXT("load_level"), TEXT("delete_level"),
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
         TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server"),
-        TEXT("import_asset"), TEXT("get_import_status")
+        TEXT("import_asset"), TEXT("get_import_status"),
+        TEXT("delete_blueprint_node"), TEXT("clear_blueprint_graph"),
+        TEXT("disconnect_blueprint_pin"), TEXT("get_blueprint_graphs")
     };
     TArray<TSharedPtr<FJsonValue>> CommandArray;
     for (const TCHAR* Cmd : SupportedCommands)

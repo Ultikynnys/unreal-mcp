@@ -46,6 +46,8 @@ public:
     static UBlueprint* FindBlueprint(const FString& BlueprintName);
     static UBlueprint* FindBlueprintByName(const FString& BlueprintName);
     static UEdGraph* FindOrCreateEventGraph(UBlueprint* Blueprint);
+    static UEdGraph* FindGraphByName(UBlueprint* Blueprint, const FString& GraphName = TEXT(""));
+    static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FString& NodeGuidStr, UEdGraph* PreferredGraph = nullptr);
     
     // Blueprint node utilities
     static UK2Node_Event* CreateEventNode(UEdGraph* Graph, const FString& EventName, const FVector2D& Position);

@@ -185,6 +185,102 @@ UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)
     return NewGraph;
 }
 
+UEdGraph* FUnrealMCPCommonUtils::FindGraphByName(UBlueprint* Blueprint, const FString& GraphName)
+{
+    if (!Blueprint)
+    {
+        return nullptr;
+    }
+
+    if (GraphName.IsEmpty() || GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
+    {
+        return FindOrCreateEventGraph(Blueprint);
+    }
+
+    if (GraphName.Equals(TEXT("UserConstructionScript"), ESearchCase::IgnoreCase) ||
+        GraphName.Equals(TEXT("ConstructionScript"), ESearchCase::IgnoreCase) ||
+        GraphName.Equals(TEXT("Construction"), ESearchCase::IgnoreCase))
+    {
+        UEdGraph* ConstructionGraph = FBlueprintEditorUtils::FindUserConstructionScript(Blueprint);
+        if (ConstructionGraph)
+        {
+            return ConstructionGraph;
+        }
+        for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+        {
+            if (Graph && Graph->GetName().Contains(TEXT("Construction")))
+            {
+                return Graph;
+            }
+        }
+        return nullptr;
+    }
+
+    TArray<UEdGraph*> AllGraphs;
+    Blueprint->GetAllGraphs(AllGraphs);
+
+    // Exact match first
+    for (UEdGraph* Graph : AllGraphs)
+    {
+        if (Graph && Graph->GetName().Equals(GraphName, ESearchCase::IgnoreCase))
+        {
+            return Graph;
+        }
+    }
+
+    // Substring match next
+    for (UEdGraph* Graph : AllGraphs)
+    {
+        if (Graph && Graph->GetName().Contains(GraphName))
+        {
+            return Graph;
+        }
+    }
+
+    return nullptr;
+}
+
+UEdGraphNode* FUnrealMCPCommonUtils::FindNodeByGuid(UBlueprint* Blueprint, const FString& NodeGuidStr, UEdGraph* PreferredGraph)
+{
+    if (NodeGuidStr.IsEmpty())
+    {
+        return nullptr;
+    }
+
+    if (PreferredGraph)
+    {
+        for (UEdGraphNode* Node : PreferredGraph->Nodes)
+        {
+            if (Node && (Node->NodeGuid.ToString().Equals(NodeGuidStr, ESearchCase::IgnoreCase) || Node->GetName().Equals(NodeGuidStr, ESearchCase::IgnoreCase)))
+            {
+                return Node;
+            }
+        }
+    }
+
+    if (Blueprint)
+    {
+        TArray<UEdGraph*> AllGraphs;
+        Blueprint->GetAllGraphs(AllGraphs);
+        for (UEdGraph* Graph : AllGraphs)
+        {
+            if (Graph == PreferredGraph)
+            {
+                continue;
+            }
+            for (UEdGraphNode* Node : Graph->Nodes)
+            {
+                if (Node && (Node->NodeGuid.ToString().Equals(NodeGuidStr, ESearchCase::IgnoreCase) || Node->GetName().Equals(NodeGuidStr, ESearchCase::IgnoreCase)))
+                {
+                    return Node;
+                }
+            }
+        }
+    }
+
+    return nullptr;
+}
+
 // Blueprint node utilities
 UK2Node_Event* FUnrealMCPCommonUtils::CreateEventNode(UEdGraph* Graph, const FString& EventName, const FVector2D& Position)
 {
