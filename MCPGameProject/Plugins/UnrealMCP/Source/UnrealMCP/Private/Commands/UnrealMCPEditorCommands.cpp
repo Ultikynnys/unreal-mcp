@@ -180,6 +180,28 @@ namespace
             Job->State = TEXT("done");
         }
     }
+
+    // Destroys actors through UEditorActorSubsystem so the editor's selection set, layers,
+    // and typed-element registry stay consistent. Bypassing this (raw Actor->Destroy())
+    // leaves dangling typed-element references and trips the TypedElementRegistry assertion
+    // ("Element type ID has not been registered"). Returns true only when every actor was
+    // destroyed; callers must NOT silently fall back to Actor->Destroy().
+    bool DestroyActorsViaEditorSubsystem(const TArray<AActor*>& Actors)
+    {
+        if (Actors.Num() == 0)
+        {
+            return true;
+        }
+
+        UEditorActorSubsystem* EditorActorSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorActorSubsystem>() : nullptr;
+        if (!EditorActorSubsystem)
+        {
+            UE_LOG(LogTemp, Error, TEXT("DestroyActorsViaEditorSubsystem: UEditorActorSubsystem is unavailable"));
+            return false;
+        }
+
+        return EditorActorSubsystem->DestroyActors(Actors);
+    }
 }
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
@@ -748,7 +770,13 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActorsByPrefix(con
     for (AActor* Actor : ToDelete)
     {
         DeletedArray.Add(MakeShared<FJsonValueString>(Actor->GetName()));
-        Actor->Destroy();
+    }
+
+    // Delete via the editor subsystem (keeps selection/layers/typed-element registry
+    // consistent). No silent fallback to Actor->Destroy().
+    if (!DestroyActorsViaEditorSubsystem(ToDelete))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to delete one or more actors via the editor subsystem"));
     }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
@@ -1275,8 +1303,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TShare
             // Store actor info before deletion for the response
             TSharedPtr<FJsonObject> ActorInfo = FUnrealMCPCommonUtils::ActorToJsonObject(Actor);
             
-            // Delete the actor
-            Actor->Destroy();
+            // Delete the actor via the editor subsystem (keeps selection/layers/typed-element
+            // registry consistent). No silent fallback to Actor->Destroy().
+            TArray<AActor*> ActorsToDestroy;
+            ActorsToDestroy.Add(Actor);
+            if (!DestroyActorsViaEditorSubsystem(ActorsToDestroy))
+            {
+                return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to delete actor via editor subsystem: %s"), *ActorName));
+            }
             
             TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
             ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
