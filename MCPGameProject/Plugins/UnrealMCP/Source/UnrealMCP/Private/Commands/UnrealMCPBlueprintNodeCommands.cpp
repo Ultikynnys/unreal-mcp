@@ -15,6 +15,8 @@
 #include "K2Node_DynamicCast.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_BreakStruct.h"
+#include "K2Node_MakeStruct.h"
 #include "K2Node_FunctionEntry.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -1104,6 +1106,44 @@ namespace
         }
         return nullptr;
     }
+
+    // Resolves a UScriptStruct by path ("/Script/CoreUObject.Vector") or by name, trying the
+    // common F* prefix so both "FVector"/"Vector" and "FBox"/"Box" resolve.
+    UScriptStruct* ResolveScriptStruct(const FString& StructName)
+    {
+        if (StructName.IsEmpty()) { return nullptr; }
+
+        if (StructName.StartsWith(TEXT("/")))
+        {
+            if (UScriptStruct* S = LoadObject<UScriptStruct>(nullptr, *StructName)) { return S; }
+        }
+
+        TArray<FString> Candidates;
+        Candidates.Add(StructName);
+        if (StructName.StartsWith(TEXT("F"))) { Candidates.Add(StructName.RightChop(1)); }
+        else { Candidates.Add(TEXT("F") + StructName); }
+
+        for (const FString& Candidate : Candidates)
+        {
+            if (UScriptStruct* S = FindObject<UScriptStruct>(ANY_PACKAGE, *Candidate)) { return S; }
+        }
+        return nullptr;
+    }
+
+    // Resolves the target struct for a break_struct/make_struct node: the sugar node types
+    // imply their struct, otherwise params.struct_type names it.
+    UScriptStruct* ResolveStructForNode(const FString& NodeType, const TSharedPtr<FJsonObject>& NodeParams)
+    {
+        if (NodeType == TEXT("break_vector") || NodeType == TEXT("make_vector")) { return ResolveScriptStruct(TEXT("Vector")); }
+        if (NodeType == TEXT("break_box") || NodeType == TEXT("make_box")) { return ResolveScriptStruct(TEXT("Box")); }
+
+        FString StructName;
+        if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("struct_type"), StructName))
+        {
+            return ResolveScriptStruct(StructName);
+        }
+        return nullptr;
+    }
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(const TSharedPtr<FJsonObject>& Params)
@@ -1216,10 +1256,28 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
         }
         Node = FUnrealMCPCommonUtils::CreateFunctionCallNode(TargetGraph, MakeTransformFn, NodePosition);
     }
+    else if (NodeType == TEXT("break_struct") || NodeType == TEXT("break_vector") || NodeType == TEXT("break_box"))
+    {
+        UScriptStruct* StructType = ResolveStructForNode(NodeType, NodeParams);
+        if (!StructType)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'break_struct' node requires params.struct_type (e.g. Vector, Box)"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateBreakStructNode(TargetGraph, StructType, NodePosition);
+    }
+    else if (NodeType == TEXT("make_struct") || NodeType == TEXT("make_vector") || NodeType == TEXT("make_box"))
+    {
+        UScriptStruct* StructType = ResolveStructForNode(NodeType, NodeParams);
+        if (!StructType)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'make_struct' node requires params.struct_type (e.g. Vector, Box)"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateMakeStructNode(TargetGraph, StructType, NodePosition);
+    }
     else
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
-            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor|variable_get|make_transform)"), *NodeType));
+            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor|variable_get|make_transform|break_struct|make_struct)"), *NodeType));
     }
 
     if (!Node)

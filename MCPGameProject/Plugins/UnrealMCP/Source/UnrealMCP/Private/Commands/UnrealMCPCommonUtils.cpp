@@ -15,6 +15,8 @@
 #include "K2Node_DynamicCast.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_BreakStruct.h"
+#include "K2Node_MakeStruct.h"
 #include "Kismet/GameplayStatics.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -444,6 +446,44 @@ UK2Node_CallFunction* FUnrealMCPCommonUtils::CreateFunctionCallNode(UEdGraph* Gr
     return FunctionNode;
 }
 
+UK2Node_BreakStruct* FUnrealMCPCommonUtils::CreateBreakStructNode(UEdGraph* Graph, UScriptStruct* StructType, const FVector2D& Position)
+{
+    if (!Graph || !StructType)
+    {
+        return nullptr;
+    }
+
+    UK2Node_BreakStruct* BreakNode = NewObject<UK2Node_BreakStruct>(Graph);
+    BreakNode->StructType = StructType;
+    BreakNode->NodePosX = Position.X;
+    BreakNode->NodePosY = Position.Y;
+    Graph->AddNode(BreakNode, true);
+    BreakNode->CreateNewGuid();
+    BreakNode->PostPlacedNewNode();
+    BreakNode->AllocateDefaultPins();
+
+    return BreakNode;
+}
+
+UK2Node_MakeStruct* FUnrealMCPCommonUtils::CreateMakeStructNode(UEdGraph* Graph, UScriptStruct* StructType, const FVector2D& Position)
+{
+    if (!Graph || !StructType)
+    {
+        return nullptr;
+    }
+
+    UK2Node_MakeStruct* MakeNode = NewObject<UK2Node_MakeStruct>(Graph);
+    MakeNode->StructType = StructType;
+    MakeNode->NodePosX = Position.X;
+    MakeNode->NodePosY = Position.Y;
+    Graph->AddNode(MakeNode, true);
+    MakeNode->CreateNewGuid();
+    MakeNode->PostPlacedNewNode();
+    MakeNode->AllocateDefaultPins();
+
+    return MakeNode;
+}
+
 UK2Node_VariableGet* FUnrealMCPCommonUtils::CreateVariableGetNode(UEdGraph* Graph, UBlueprint* Blueprint, const FString& VariableName, const FVector2D& Position)
 {
     if (!Graph || !Blueprint)
@@ -672,7 +712,16 @@ bool FUnrealMCPCommonUtils::ConnectGraphNodes(UEdGraph* Graph, UEdGraphNode* Sou
     }
     
     UEdGraphPin* SourcePin = FindPin(SourceNode, SourcePinName, EGPD_Output);
+    if (!SourcePin)
+    {
+        // Not a top-level pin: maybe a split struct member ("X", "Min", or "ReturnValue_X").
+        SourcePin = FindPinOrSplitMember(SourceNode, SourcePinName, EGPD_Output);
+    }
     UEdGraphPin* TargetPin = FindPin(TargetNode, TargetPinName, EGPD_Input);
+    if (!TargetPin)
+    {
+        TargetPin = FindPinOrSplitMember(TargetNode, TargetPinName, EGPD_Input);
+    }
     
     if (SourcePin && TargetPin)
     {
@@ -742,6 +791,94 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPin(UEdGraphNode* Node, const FString& P
     }
     
     UE_LOG(LogTemp, Warning, TEXT("  - No matching pin found for '%s'"), *PinName);
+    return nullptr;
+}
+
+UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction)
+{
+    if (!Node)
+    {
+        return nullptr;
+    }
+
+    // A caller may pass "Parent.Member" to disambiguate; a bare name has no explicit parent.
+    FString ParentPart;
+    FString MemberPart = PinName;
+    if (PinName.Contains(TEXT(".")))
+    {
+        PinName.Split(TEXT("."), &ParentPart, &MemberPart);
+    }
+
+    // 1) Already-split struct pins keep their children in <ParentPin>->SubPins (NOT Node->Pins),
+    //    named "<ParentPinName>_<Member>". Match by full name or by the trailing member segment.
+    for (UEdGraphPin* ParentPin : Node->Pins)
+    {
+        if (!ParentPin || ParentPin->Direction != Direction || ParentPin->SubPins.Num() == 0)
+        {
+            continue;
+        }
+        if (!ParentPart.IsEmpty() && !ParentPin->PinName.ToString().Equals(ParentPart, ESearchCase::IgnoreCase))
+        {
+            continue;
+        }
+        for (UEdGraphPin* SubPin : ParentPin->SubPins)
+        {
+            if (!SubPin)
+            {
+                continue;
+            }
+            const FString SubName = SubPin->PinName.ToString();
+            if (SubName.Equals(PinName, ESearchCase::IgnoreCase))
+            {
+                return SubPin;
+            }
+            FString SubParent, SubMember;
+            if (SubName.Split(TEXT("_"), &SubParent, &SubMember, ESearchCase::IgnoreCase, ESearchDir::FromEnd)
+                && SubMember.Equals(MemberPart, ESearchCase::IgnoreCase))
+            {
+                return SubPin;
+            }
+        }
+    }
+
+    // 2) Not split yet: find a struct pin whose struct defines the requested member, split it
+    //    through the schema, then resolve the freshly created child pin from its SubPins.
+    for (UEdGraphPin* Pin : Node->Pins)
+    {
+        if (!Pin || Pin->Direction != Direction || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct)
+        {
+            continue;
+        }
+        if (!ParentPart.IsEmpty() && !Pin->PinName.ToString().Equals(ParentPart, ESearchCase::IgnoreCase))
+        {
+            continue;
+        }
+        UScriptStruct* Struct = Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get());
+        if (!Struct || !Struct->FindPropertyByName(FName(*MemberPart)))
+        {
+            continue;
+        }
+        const UEdGraphSchema* Schema = Node->GetSchema();
+        if (!Schema)
+        {
+            continue;
+        }
+        Schema->SplitPin(Pin);
+        for (UEdGraphPin* SubPin : Pin->SubPins)
+        {
+            if (!SubPin)
+            {
+                continue;
+            }
+            FString SubParent, SubMember;
+            if (SubPin->PinName.ToString().Split(TEXT("_"), &SubParent, &SubMember, ESearchCase::IgnoreCase, ESearchDir::FromEnd)
+                && SubMember.Equals(MemberPart, ESearchCase::IgnoreCase))
+            {
+                return SubPin;
+            }
+        }
+    }
+
     return nullptr;
 }
 

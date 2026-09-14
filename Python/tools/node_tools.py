@@ -480,11 +480,15 @@ def register_blueprint_node_tools(mcp: FastMCP):
             - "spawn_actor"  : BeginDeferredActorSpawnFromClass (params.actor_class optional)
             - "variable_get" : get a variable (params.variable_name required)
             - "make_transform": KismetMathLibrary::MakeTransform (Location/Rotation/Scale)
+            - "break_struct" : UK2Node_BreakStruct (params.struct_type required, e.g. "Box", "Vector")
+            - "make_struct"  : UK2Node_MakeStruct (params.struct_type required, e.g. "Vector", "Box")
+            - "break_vector" / "break_box" : sugar for break_struct on Vector/Box
+            - "make_vector"  / "make_box"  : sugar for make_struct on Vector/Box
 
         Args:
             blueprint_name: Name of the target Blueprint
             node_type: Type of node to create
-            params: Parameters specific to the node type
+            params: Parameters specific to the node type (e.g. {"struct_type": "Box"})
             node_position: Optional [X, Y] position in the graph
             graph_name: Optional graph name (defaults to 'EventGraph'; can be 'UserConstructionScript' etc.)
 
