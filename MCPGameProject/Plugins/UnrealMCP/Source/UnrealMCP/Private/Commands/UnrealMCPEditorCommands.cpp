@@ -41,6 +41,13 @@
 #include "AssetImportTask.h"
 #include "Containers/Ticker.h"
 #include "Engine/Texture2D.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "TextureResource.h"
+#include "GameFramework/PlayerController.h"
+#include "Engine/World.h"
+#include "RenderingThread.h"
 
 namespace
 {
@@ -275,6 +282,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("delete_level")) { return HandleDeleteLevel(Params); }
     else if (CommandType == TEXT("set_viewport_camera")) { return HandleSetViewportCamera(Params); }
     else if (CommandType == TEXT("capture_viewport_screenshot")) { return HandleCaptureViewportScreenshot(Params); }
+    else if (CommandType == TEXT("capture_pie_screenshot")) { return HandleCapturePIEScreenshot(Params); }
     else if (CommandType == TEXT("batch_execute")) { return HandleBatchExecute(Params); }
     else if (CommandType == TEXT("execute_python")) { return HandleExecutePython(Params); }
     else if (CommandType == TEXT("import_asset")) { return HandleImportAsset(Params); }
@@ -297,7 +305,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("spawn_blueprint_actor"), TEXT("spawn_mesh_actor"), TEXT("spawn_light_actor"),
         TEXT("spawn_mesh_grid"), TEXT("spawn_instanced_mesh"), TEXT("set_actor_material"),
         TEXT("set_actor_folder"), TEXT("delete_actors_by_prefix"), TEXT("focus_viewport"),
-        TEXT("take_screenshot"), TEXT("capture_viewport_screenshot"), TEXT("set_viewport_camera"),
+        TEXT("take_screenshot"), TEXT("capture_viewport_screenshot"), TEXT("capture_pie_screenshot"), TEXT("set_viewport_camera"),
         TEXT("create_level"), TEXT("save_level"), TEXT("load_level"), TEXT("delete_level"),
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
         TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server"),
@@ -439,6 +447,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnMeshActor(const TSh
     if (Params->HasField(TEXT("scale"))) { Scale = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale")); }
 
     FActorSpawnParameters SpawnParams;
+    // A duplicate name must auto-rename, NOT fatal: FActorSpawnParameters defaults NameMode to
+    // Required_Fatal, which crashes the editor when the supplied name is already in use.
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
     if (!ActorName.IsEmpty()) { SpawnParams.Name = *ActorName; }
     AStaticMeshActor* NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
     if (!NewActor)
@@ -482,6 +493,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnLightActor(const TS
     if (Params->HasField(TEXT("rotation"))) { Rotation = FUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation")); }
 
     FActorSpawnParameters SpawnParams;
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
     if (!ActorName.IsEmpty()) { SpawnParams.Name = *ActorName; }
 
     ALight* NewLight = nullptr;
@@ -582,6 +594,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnMeshGrid(const TSha
         {
             const FVector Loc = Origin + FVector(c * SpacingX, r * SpacingY, 0.f);
             FActorSpawnParameters SpawnParams;
+            SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
             SpawnParams.Name = *FString::Printf(TEXT("%s_%d_%d"), *Prefix, r, c);
             AStaticMeshActor* NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Loc, Rotation, SpawnParams);
             if (!NewActor) { continue; }
@@ -969,6 +982,116 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCaptureViewportScreensho
     return ResultObj;
 }
 
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCapturePIEScreenshot(const TSharedPtr<FJsonObject>& Params)
+{
+    // Render the PLAY world, not the editor world - requires an active PIE session.
+    UWorld* PIEWorld = GEditor ? GEditor->PlayWorld : nullptr;
+    if (!PIEWorld)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PIE is not running (no play world). Start a Play-In-Editor session first."));
+    }
+
+    // Resolve the camera transform: explicit location/rotation, else the PIE player's view point.
+    const bool bHasLocation = Params->HasField(TEXT("location"));
+    const bool bHasRotation = Params->HasField(TEXT("rotation"));
+    FVector Location = FVector::ZeroVector;
+    FRotator Rotation = FRotator::ZeroRotator;
+    if (bHasLocation) { Location = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location")); }
+    if (bHasRotation) { Rotation = FUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation")); }
+    if (!bHasLocation || !bHasRotation)
+    {
+        APlayerController* PC = PIEWorld->GetFirstPlayerController();
+        if (!PC)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No location/rotation supplied and no PIE player controller is available"));
+        }
+        FVector PlayerLocation = Location;
+        FRotator PlayerRotation = Rotation;
+        PC->GetPlayerViewPoint(PlayerLocation, PlayerRotation);
+        if (!bHasLocation) { Location = PlayerLocation; }
+        if (!bHasRotation) { Rotation = PlayerRotation; }
+    }
+
+    int32 Width = 1280;
+    int32 Height = 720;
+    if (Params->HasField(TEXT("width")))  { Width  = (int32)Params->GetNumberField(TEXT("width")); }
+    if (Params->HasField(TEXT("height"))) { Height = (int32)Params->GetNumberField(TEXT("height")); }
+    Width  = FMath::Clamp(Width, 16, 4096);
+    Height = FMath::Clamp(Height, 16, 4096);
+
+    FString FileName = TEXT("MCP_PIE_Screenshot.png");
+    Params->TryGetStringField(TEXT("filename"), FileName);
+    if (!FileName.EndsWith(TEXT(".png"))) { FileName += TEXT(".png"); }
+    FString FilePath = FileName;
+    if (FPaths::IsRelative(FilePath))
+    {
+        FilePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Screenshots") / FileName);
+    }
+
+    // Transient scene capture placed in the PIE world at the requested transform.
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.ObjectFlags |= RF_Transient;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    ASceneCapture2D* CaptureActor = PIEWorld->SpawnActor<ASceneCapture2D>(ASceneCapture2D::StaticClass(), Location, Rotation, SpawnParams);
+    if (!CaptureActor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn SceneCapture2D in the PIE world"));
+    }
+    USceneCaptureComponent2D* Capture = CaptureActor->GetCaptureComponent2D();
+
+    UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
+    RenderTarget->RenderTargetFormat = RTF_RGBA8;
+    RenderTarget->ClearColor = FLinearColor::Black;
+    RenderTarget->bAutoGenerateMips = false;
+    RenderTarget->InitAutoFormat(Width, Height);
+
+    Capture->TextureTarget = RenderTarget;
+    Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+    Capture->bCaptureEveryFrame = false;
+    Capture->bCaptureOnMovement = false;
+    if (Params->HasField(TEXT("fov"))) { Capture->FOVAngle = (float)Params->GetNumberField(TEXT("fov")); }
+    Capture->ShowFlags.SetAntiAliasing(true);
+    Capture->ShowFlags.SetMotionBlur(false);
+
+    Capture->CaptureScene();
+    FlushRenderingCommands();
+
+    TArray<FColor> Pixels;
+    FTextureRenderTargetResource* RTResource = RenderTarget->GameThread_GetRenderTargetResource();
+    const bool bRead = RTResource && RTResource->ReadPixels(Pixels, FReadSurfaceDataFlags()) && Pixels.Num() == Width * Height;
+
+    CaptureActor->Destroy();
+
+    if (!bRead)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to read pixels from the PIE render target"));
+    }
+
+    TArray<uint8> CompressedBitmap;
+    FImageUtils::CompressImageArray(Width, Height, Pixels, CompressedBitmap);
+    if (!FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save PIE screenshot: %s"), *FilePath));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("filepath"), FilePath);
+    ResultObj->SetStringField(TEXT("world"), TEXT("PIE"));
+    TArray<TSharedPtr<FJsonValue>> LocationArray;
+    LocationArray.Add(MakeShared<FJsonValueNumber>(Location.X));
+    LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Y));
+    LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Z));
+    ResultObj->SetArrayField(TEXT("location"), LocationArray);
+    TArray<TSharedPtr<FJsonValue>> RotationArray;
+    RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Pitch));
+    RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Yaw));
+    RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Roll));
+    ResultObj->SetArrayField(TEXT("rotation"), RotationArray);
+    ResultObj->SetNumberField(TEXT("width"), Width);
+    ResultObj->SetNumberField(TEXT("height"), Height);
+    return ResultObj;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBatchExecute(const TSharedPtr<FJsonObject>& Params)
 {
     const TArray<TSharedPtr<FJsonValue>>* Actions = nullptr;
@@ -1245,6 +1368,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     }
 
     FActorSpawnParameters SpawnParams;
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
     SpawnParams.Name = *ActorName;
 
     if (ActorType == TEXT("StaticMeshActor"))

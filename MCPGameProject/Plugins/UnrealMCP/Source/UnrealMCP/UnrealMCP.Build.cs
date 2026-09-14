@@ -54,6 +54,7 @@ public class UnrealMCP : ModuleRules
 				"AssetRegistry",
 				"AssetTools",
 				"LevelEditor",
+				"RenderCore",
 				"PythonScriptPlugin"
 			}
 		);

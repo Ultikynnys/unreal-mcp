@@ -57,6 +57,7 @@ private:
     // Viewport
     TSharedPtr<FJsonObject> HandleSetViewportCamera(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleCaptureViewportScreenshot(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleCapturePIEScreenshot(const TSharedPtr<FJsonObject>& Params);
 
     // Misc
     TSharedPtr<FJsonObject> HandleBatchExecute(const TSharedPtr<FJsonObject>& Params);

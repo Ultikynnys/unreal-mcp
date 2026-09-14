@@ -254,6 +254,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("delete_level") ||
                      CommandType == TEXT("set_viewport_camera") ||
                      CommandType == TEXT("capture_viewport_screenshot") ||
+                     CommandType == TEXT("capture_pie_screenshot") ||
                      CommandType == TEXT("batch_execute") ||
                      CommandType == TEXT("execute_python") ||
                      CommandType == TEXT("import_asset") ||

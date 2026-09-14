@@ -518,6 +518,50 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
+    def capture_pie_screenshot(
+        ctx: Context,
+        location: Optional[List[float]] = None,
+        rotation: Optional[List[float]] = None,
+        filename: str = "MCP_PIE_Screenshot.png",
+        width: int = 1280,
+        height: int = 720,
+        fov: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Capture the Play-In-Editor (PIE) window from a specific world location and orientation.
+
+        Renders the running PIE world from a transient camera placed at location/rotation (or the
+        PIE player's current view if omitted) and saves a PNG under Saved/Screenshots. Requires an
+        active PIE session. Renders the 3D scene only (no UMG/HUD overlay).
+
+        Args:
+            location: Optional [X, Y, Z] world location for the capture camera
+            rotation: Optional [Pitch, Yaw, Roll] for the capture camera
+            filename: Output PNG name (relative -> Saved/Screenshots/)
+            width: Image width in pixels (clamped 16..4096, default 1280)
+            height: Image height in pixels (clamped 16..4096, default 720)
+            fov: Optional horizontal field of view in degrees
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "filename": filename,
+                "width": width,
+                "height": height
+            }
+            if location is not None:
+                params["location"] = location
+            if rotation is not None:
+                params["rotation"] = rotation
+            if fov is not None:
+                params["fov"] = fov
+            return unreal.send_command("capture_pie_screenshot", params)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
     def save_level(
         ctx: Context,
         destination_path: Optional[str] = None,
