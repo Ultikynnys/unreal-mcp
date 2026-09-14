@@ -8,6 +8,7 @@
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
 #include "K2Node_InputAction.h"
 #include "K2Node_Self.h"
 #include "K2Node_IfThenElse.h"
@@ -87,6 +88,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("get_blueprint_graphs"))
     {
         return HandleGetBlueprintGraphs(Params);
+    }
+    else if (CommandType == TEXT("set_blueprint_node_pin_default"))
+    {
+        return HandleSetBlueprintNodePinDefault(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -433,9 +438,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
                         UFunction* AvailableFunc = *FuncIt;
                         UE_LOG(LogTemp, Display, TEXT("  - Available function: %s"), *AvailableFunc->GetName());
                         
-                        if (AvailableFunc->GetName().Equals(FunctionName, ESearchCase::IgnoreCase))
+                        if (AvailableFunc->GetName().Equals(FunctionName, ESearchCase::IgnoreCase) ||
+                            AvailableFunc->GetDisplayNameText().ToString().Equals(FunctionName, ESearchCase::IgnoreCase))
                         {
-                            UE_LOG(LogTemp, Display, TEXT("  - Found case-insensitive match: %s"), *AvailableFunc->GetName());
+                            UE_LOG(LogTemp, Display, TEXT("  - Found match (name/display): %s"), *AvailableFunc->GetName());
                             Function = AvailableFunc;
                             break;
                         }
@@ -821,8 +827,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
         }
     }
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    // Mark the blueprint as (structurally) modified and recompile so the new variable lands on
+    // the generated class - variable_get/variable_set resolve properties against GeneratedClass.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    FKismetEditorUtilities::CompileBlueprint(Blueprint);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("variable_name"), VariableName);
@@ -1043,6 +1051,30 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
                 PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
                 PinObj->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
                 PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+                if (!Pin->DefaultValue.IsEmpty())
+                {
+                    PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+                }
+                // Split struct pins keep their members in SubPins (not Node->Pins); surface them.
+                if (Pin->SubPins.Num() > 0)
+                {
+                    TArray<TSharedPtr<FJsonValue>> SubPinsArray;
+                    for (UEdGraphPin* SubPin : Pin->SubPins)
+                    {
+                        if (!SubPin) continue;
+                        TSharedPtr<FJsonObject> SubObj = MakeShared<FJsonObject>();
+                        SubObj->SetStringField(TEXT("name"), SubPin->PinName.ToString());
+                        SubObj->SetStringField(TEXT("direction"), SubPin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
+                        SubObj->SetStringField(TEXT("category"), SubPin->PinType.PinCategory.ToString());
+                        SubObj->SetBoolField(TEXT("is_connected"), SubPin->LinkedTo.Num() > 0);
+                        if (!SubPin->DefaultValue.IsEmpty())
+                        {
+                            SubObj->SetStringField(TEXT("default_value"), SubPin->DefaultValue);
+                        }
+                        SubPinsArray.Add(MakeShared<FJsonValueObject>(SubObj));
+                    }
+                    PinObj->SetArrayField(TEXT("sub_pins"), SubPinsArray);
+                }
 
                 TArray<TSharedPtr<FJsonValue>> LinksArray;
                 for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
@@ -1228,6 +1260,24 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
     {
         Node = FUnrealMCPCommonUtils::CreateMacroNode(TargetGraph, TEXT("ForEachLoop"), NodePosition);
     }
+    else if (NodeType == TEXT("for_loop") || NodeType == TEXT("forloop"))
+    {
+        Node = FUnrealMCPCommonUtils::CreateMacroNode(TargetGraph, TEXT("ForLoop"), NodePosition);
+        if (Node)
+        {
+            // Optional literals on the loop bounds; leave unconnected to wire them instead.
+            int32 FirstIndex = 0;
+            if (NodeParams.IsValid() && NodeParams->TryGetNumberField(TEXT("first_index"), FirstIndex))
+            {
+                FUnrealMCPCommonUtils::SetNodePinDefault(Node, TEXT("FirstIndex"), FString::FromInt(FirstIndex));
+            }
+            int32 LastIndex = 0;
+            if (NodeParams.IsValid() && NodeParams->TryGetNumberField(TEXT("last_index"), LastIndex))
+            {
+                FUnrealMCPCommonUtils::SetNodePinDefault(Node, TEXT("LastIndex"), FString::FromInt(LastIndex));
+            }
+        }
+    }
     else if (NodeType == TEXT("spawn_actor"))
     {
         UClass* ActorClass = nullptr;
@@ -1246,6 +1296,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
             return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'variable_get' node requires params.variable_name"));
         }
         Node = FUnrealMCPCommonUtils::CreateVariableGetNode(TargetGraph, Blueprint, VariableName, NodePosition);
+    }
+    else if (NodeType == TEXT("variable_set"))
+    {
+        FString VariableName;
+        if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("variable_name"), VariableName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'variable_set' node requires params.variable_name"));
+        }
+        Node = FUnrealMCPCommonUtils::CreateVariableSetNode(TargetGraph, Blueprint, VariableName, NodePosition);
     }
     else if (NodeType == TEXT("make_transform"))
     {
@@ -1277,12 +1336,34 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
     else
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
-            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor|variable_get|make_transform|break_struct|make_struct)"), *NodeType));
+            TEXT("Unsupported node_type: %s (expected branch|sequence|cast|custom_event|foreach|spawn_actor|variable_get|make_transform|break_struct|make_struct|for_loop|variable_set)"), *NodeType));
     }
 
     if (!Node)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create '%s' node"), *NodeType));
+    }
+
+    // params.defaults: { "<pin>": value } sets literals on the new node's (unconnected) pins.
+    if (NodeParams.IsValid())
+    {
+        const TSharedPtr<FJsonObject>* DefaultsObj = nullptr;
+        if (NodeParams->TryGetObjectField(TEXT("defaults"), DefaultsObj) && DefaultsObj)
+        {
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DefaultsObj)->Values)
+            {
+                if (!Pair.Value.IsValid()) { continue; }
+                FString PinValue;
+                switch (Pair.Value->Type)
+                {
+                case EJson::String:  PinValue = Pair.Value->AsString(); break;
+                case EJson::Number:  PinValue = FString::SanitizeFloat(Pair.Value->AsNumber()); break;
+                case EJson::Boolean: PinValue = Pair.Value->AsBool() ? TEXT("true") : TEXT("false"); break;
+                default: continue;
+                }
+                FUnrealMCPCommonUtils::SetNodePinDefault(Node, Pair.Key, PinValue);
+            }
+        }
     }
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
@@ -1304,6 +1385,76 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
     }
     ResultObj->SetArrayField(TEXT("pins"), PinsArray);
 
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleSetBlueprintNodePinDefault(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString NodeId;
+    if (!Params->TryGetStringField(TEXT("node_id"), NodeId))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_id' parameter"));
+    }
+
+    FString PinName;
+    if (!Params->TryGetStringField(TEXT("pin_name"), PinName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pin_name' parameter"));
+    }
+
+    // Accept value as string / number / bool; stringify it for the pin's default text.
+    const TSharedPtr<FJsonValue> ValueJson = Params->TryGetField(TEXT("value"));
+    if (!ValueJson.IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
+    }
+    FString ValueStr;
+    switch (ValueJson->Type)
+    {
+    case EJson::String:  ValueStr = ValueJson->AsString(); break;
+    case EJson::Number:  ValueStr = FString::SanitizeFloat(ValueJson->AsNumber()); break;
+    case EJson::Boolean: ValueStr = ValueJson->AsBool() ? TEXT("true") : TEXT("false"); break;
+    default:             ValueStr = ValueJson->AsString(); break;
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* PreferredGraph = nullptr;
+    if (!GraphName.IsEmpty())
+    {
+        PreferredGraph = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+    }
+
+    UEdGraphNode* Node = FUnrealMCPCommonUtils::FindNodeByGuid(Blueprint, NodeId, PreferredGraph);
+    if (!Node)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Node not found: %s"), *NodeId));
+    }
+
+    if (!FUnrealMCPCommonUtils::SetNodePinDefault(Node, PinName, ValueStr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pin not found: %s"), *PinName));
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("node_id"), NodeId);
+    ResultObj->SetStringField(TEXT("pin_name"), PinName);
+    ResultObj->SetStringField(TEXT("value"), ValueStr);
     return ResultObj;
 }
 

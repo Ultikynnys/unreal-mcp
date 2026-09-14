@@ -71,6 +71,7 @@ public:
                                 UEdGraphNode* TargetNode, const FString& TargetPinName);
     static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
     static UEdGraphPin* FindPinOrSplitMember(UEdGraphNode* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
+    static bool SetNodePinDefault(UEdGraphNode* Node, const FString& PinName, const FString& Value);
     static UK2Node_Event* FindExistingEventNode(UEdGraph* Graph, const FString& EventName);
 
     // Property utilities

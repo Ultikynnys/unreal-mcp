@@ -479,11 +479,15 @@ def register_blueprint_node_tools(mcp: FastMCP):
             - "foreach"      : ForEachLoop macro (array element + loop body)
             - "spawn_actor"  : BeginDeferredActorSpawnFromClass (params.actor_class optional)
             - "variable_get" : get a variable (params.variable_name required)
+            - "variable_set" : set a variable (params.variable_name required)
             - "make_transform": KismetMathLibrary::MakeTransform (Location/Rotation/Scale)
             - "break_struct" : UK2Node_BreakStruct (params.struct_type required, e.g. "Box", "Vector")
             - "make_struct"  : UK2Node_MakeStruct (params.struct_type required, e.g. "Vector", "Box")
             - "break_vector" / "break_box" : sugar for break_struct on Vector/Box
             - "make_vector"  / "make_box"  : sugar for make_struct on Vector/Box
+            - "for_loop"     : standard ForLoop macro, index range (params.first_index/last_index optional)
+
+        Optional params.defaults: { "<pin>": value } sets literals on the new node's pins.
 
         Args:
             blueprint_name: Name of the target Blueprint
@@ -523,6 +527,57 @@ def register_blueprint_node_tools(mcp: FastMCP):
 
         except Exception as e:
             error_msg = f"Error adding blueprint node: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def set_blueprint_node_pin_default(
+        ctx: Context,
+        blueprint_name: str,
+        node_id: str,
+        pin_name: str,
+        value: Any,
+        graph_name: str = ""
+    ) -> Dict[str, Any]:
+        """Set the literal/default value on an unconnected pin of a Blueprint node.
+
+        Useful for non-zero constants (loop bounds, vector components, counts) without a
+        separate literal node. `pin_name` may be a top-level pin ("LastIndex", "X") or a
+        split struct member ("Vector.X", "ReturnValue_Max").
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            node_id: Node GUID (from add_blueprint_node / find_blueprint_nodes)
+            pin_name: Pin to set (e.g. "FirstIndex", "LastIndex", "X", "Vector.X")
+            value: Literal value (string, number, or bool)
+            graph_name: Optional graph name to narrow the node search
+
+        Returns:
+            Dict with success status and the applied value
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params = {
+                "blueprint_name": blueprint_name,
+                "node_id": node_id,
+                "pin_name": pin_name,
+                "value": value
+            }
+            if graph_name:
+                params["graph_name"] = graph_name
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Setting pin '{pin_name}' default on node '{node_id}' in '{blueprint_name}'")
+            response = unreal.send_command("set_blueprint_node_pin_default", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error setting pin default: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 

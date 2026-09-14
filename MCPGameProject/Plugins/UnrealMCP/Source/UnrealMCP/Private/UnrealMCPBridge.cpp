@@ -298,7 +298,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("delete_blueprint_node") ||
                      CommandType == TEXT("clear_blueprint_graph") ||
                      CommandType == TEXT("disconnect_blueprint_pin") ||
-                     CommandType == TEXT("get_blueprint_graphs"))
+                     CommandType == TEXT("get_blueprint_graphs") ||
+                     CommandType == TEXT("set_blueprint_node_pin_default"))
             {
                 ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
             }

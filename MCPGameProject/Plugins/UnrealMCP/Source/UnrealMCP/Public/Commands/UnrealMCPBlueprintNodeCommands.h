@@ -29,4 +29,5 @@ private:
     TSharedPtr<FJsonObject> HandleClearBlueprintGraph(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleDisconnectBlueprintPin(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetBlueprintGraphs(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetBlueprintNodePinDefault(const TSharedPtr<FJsonObject>& Params);
 }; 

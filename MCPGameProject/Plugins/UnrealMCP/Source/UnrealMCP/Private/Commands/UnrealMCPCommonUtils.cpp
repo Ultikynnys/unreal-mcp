@@ -813,7 +813,7 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, con
     //    named "<ParentPinName>_<Member>". Match by full name or by the trailing member segment.
     for (UEdGraphPin* ParentPin : Node->Pins)
     {
-        if (!ParentPin || ParentPin->Direction != Direction || ParentPin->SubPins.Num() == 0)
+        if (!ParentPin || (Direction != EGPD_MAX && ParentPin->Direction != Direction) || ParentPin->SubPins.Num() == 0)
         {
             continue;
         }
@@ -845,7 +845,7 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, con
     //    through the schema, then resolve the freshly created child pin from its SubPins.
     for (UEdGraphPin* Pin : Node->Pins)
     {
-        if (!Pin || Pin->Direction != Direction || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct)
+        if (!Pin || (Direction != EGPD_MAX && Pin->Direction != Direction) || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct)
         {
             continue;
         }
@@ -854,10 +854,24 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, con
             continue;
         }
         UScriptStruct* Struct = Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get());
-        if (!Struct || !Struct->FindPropertyByName(FName(*MemberPart)))
+        if (!Struct)
         {
             continue;
         }
+
+        // The requested pin may be a bare member ("Max") or the full split name the schema
+        // generates ("ReturnValue_Max" = "<ParentPinName>_<Member>").
+        const FString ParentPinName = Pin->PinName.ToString();
+        FString MemberName = MemberPart;
+        if (PinName.StartsWith(ParentPinName + TEXT("_")))
+        {
+            MemberName = PinName.RightChop(ParentPinName.Len() + 1);
+        }
+        if (!Struct->FindPropertyByName(FName(*MemberName)))
+        {
+            continue;
+        }
+
         const UEdGraphSchema* Schema = Node->GetSchema();
         if (!Schema)
         {
@@ -870,9 +884,14 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, con
             {
                 continue;
             }
+            const FString SubName = SubPin->PinName.ToString();
+            if (SubName.Equals(PinName, ESearchCase::IgnoreCase))
+            {
+                return SubPin;
+            }
             FString SubParent, SubMember;
-            if (SubPin->PinName.ToString().Split(TEXT("_"), &SubParent, &SubMember, ESearchCase::IgnoreCase, ESearchDir::FromEnd)
-                && SubMember.Equals(MemberPart, ESearchCase::IgnoreCase))
+            if (SubName.Split(TEXT("_"), &SubParent, &SubMember, ESearchCase::IgnoreCase, ESearchDir::FromEnd)
+                && SubMember.Equals(MemberName, ESearchCase::IgnoreCase))
             {
                 return SubPin;
             }
@@ -880,6 +899,35 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPinOrSplitMember(UEdGraphNode* Node, con
     }
 
     return nullptr;
+}
+
+bool FUnrealMCPCommonUtils::SetNodePinDefault(UEdGraphNode* Node, const FString& PinName, const FString& Value)
+{
+    if (!Node)
+    {
+        return false;
+    }
+
+    // Exact top-level pin first; otherwise a split struct member (accepts "X" or "Vector.X").
+    UEdGraphPin* Pin = FindPin(Node, PinName, EGPD_MAX);
+    if (!Pin)
+    {
+        Pin = FindPinOrSplitMember(Node, PinName, EGPD_MAX);
+    }
+    if (!Pin)
+    {
+        return false;
+    }
+
+    const UEdGraphSchema* Schema = Node->GetSchema();
+    if (!Schema)
+    {
+        return false;
+    }
+
+    // TrySetDefaultValue validates/converts per pin type and marks the graph modified.
+    Schema->TrySetDefaultValue(*Pin, Value);
+    return true;
 }
 
 // Actor utilities
