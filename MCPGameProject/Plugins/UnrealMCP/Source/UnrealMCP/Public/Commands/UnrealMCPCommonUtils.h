@@ -74,6 +74,13 @@ public:
     static bool SetNodePinDefault(UEdGraphNode* Node, const FString& PinName, const FString& Value);
     static UK2Node_Event* FindExistingEventNode(UEdGraph* Graph, const FString& EventName);
 
+    // Node layout / placement validation (headless; no graph editor required)
+    static FVector2D EstimateNodeSize(const UEdGraphNode* Node);
+    static float NodeGap(const UEdGraphNode* A, const UEdGraphNode* B);
+    static bool ValidatePlacement(UEdGraph* Graph, UEdGraphNode* NewNode, FString& OutErrorMessage);
+    static bool FinalizePlacedNode(UEdGraph* Graph, UEdGraphNode* Node, FString& OutErrorMessage);
+    static UEdGraphNode* FindWireOverlap(UEdGraphNode* Source, UEdGraphNode* Target, FString& OutErrorMessage);
+
     // Property utilities
     static bool SetObjectProperty(UObject* Object, const FString& PropertyName, 
                                  const TSharedPtr<FJsonValue>& Value, FString& OutErrorMessage);

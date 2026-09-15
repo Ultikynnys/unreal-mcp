@@ -160,6 +160,29 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleConnectBlueprintN
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source or target node not found"));
     }
 
+    // Enforce a sane wire length: reject connections that would span the graph.
+    float MaxConnectionLength = 600.0f;
+    if (Params->HasField(TEXT("max_connection_length")))
+    {
+        MaxConnectionLength = (float)Params->GetNumberField(TEXT("max_connection_length"));
+    }
+    const float ConnectionGap = FUnrealMCPCommonUtils::NodeGap(SourceNode, TargetNode);
+    if (ConnectionGap > MaxConnectionLength)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Connection too long: '%s' (%d, %d) and '%s' (%d, %d) are %.0f units apart (max %.0f). Move the nodes closer before connecting."),
+            *SourceNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), SourceNode->NodePosX, SourceNode->NodePosY,
+            *TargetNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), TargetNode->NodePosX, TargetNode->NodePosY,
+            ConnectionGap, MaxConnectionLength));
+    }
+
+    // Reject wires that would pass over another node's box (design rule).
+    FString WireError;
+    if (FUnrealMCPCommonUtils::FindWireOverlap(SourceNode, TargetNode, WireError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(WireError);
+    }
+
     UEdGraph* GraphToConnect = SourceNode->GetGraph();
     if (!GraphToConnect)
     {
@@ -245,7 +268,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
     
     // Explicitly reconstruct node for UE5.5
     GetComponentNode->ReconstructNode();
-    
+
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    FString PlacementError;
+    if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, GetComponentNode, PlacementError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
+    }
+
     // Mark the blueprint as modified
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
@@ -298,6 +328,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintEvent
     if (!EventNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create event node"));
+    }
+
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    FString PlacementError;
+    if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, EventNode, PlacementError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
     }
 
     // Mark the blueprint as modified
@@ -709,6 +746,16 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
         }
     }
 
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    if (FunctionNode)
+    {
+        FString PlacementError;
+        if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, FunctionNode, PlacementError))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
+        }
+    }
+
     // Mark the blueprint as modified
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
@@ -884,6 +931,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintInput
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create input action node"));
     }
 
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    FString PlacementError;
+    if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, InputActionNode, PlacementError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
+    }
+
     // Mark the blueprint as modified
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
@@ -930,6 +984,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintSelfR
     if (!SelfNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create self node"));
+    }
+
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    FString PlacementError;
+    if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, SelfNode, PlacementError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
     }
 
     // Mark the blueprint as modified
@@ -1342,6 +1403,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintNode(
     if (!Node)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create '%s' node"), *NodeType));
+    }
+
+    // Reject the call (rather than stack nodes) if it would overlap an existing node.
+    FString PlacementError;
+    if (!FUnrealMCPCommonUtils::FinalizePlacedNode(TargetGraph, Node, PlacementError))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
     }
 
     // params.defaults: { "<pin>": value } sets literals on the new node's (unconnected) pins.

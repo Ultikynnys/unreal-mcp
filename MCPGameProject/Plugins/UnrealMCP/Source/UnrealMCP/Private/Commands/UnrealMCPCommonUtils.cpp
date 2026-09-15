@@ -1219,4 +1219,200 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
     OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"), 
                                     *Property->GetClass()->GetName(), *PropertyName);
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Node layout / placement validation (headless): estimate node boxes and reject
+// placements that would overlap an existing node, so the tools never stack nodes.
+// ---------------------------------------------------------------------------
+
+FVector2D FUnrealMCPCommonUtils::EstimateNodeSize(const UEdGraphNode* Node)
+{
+    if (!Node)
+    {
+        return FVector2D(160.0f, 80.0f);
+    }
+
+    // Resizable nodes that Slate has laid out report a real size.
+    if (Node->GetWidth() > 0.0f && Node->GetHeight() > 0.0f)
+    {
+        return FVector2D(Node->GetWidth(), Node->GetHeight());
+    }
+
+    // Headless: estimate from the title and the longest input/output pin labels.
+    const FString Title = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+    int32 MaxInputLen = 0;
+    int32 MaxOutputLen = 0;
+    int32 NumPins = 0;
+    for (const UEdGraphPin* Pin : Node->Pins)
+    {
+        if (!Pin)
+        {
+            continue;
+        }
+        ++NumPins;
+        const int32 Len = Pin->PinName.ToString().Len();
+        if (Pin->Direction == EGPD_Input)
+        {
+            MaxInputLen = FMath::Max(MaxInputLen, Len);
+        }
+        else
+        {
+            MaxOutputLen = FMath::Max(MaxOutputLen, Len);
+        }
+    }
+
+    const float TitleWidth = Title.Len() * 8.0f;
+    const float PinsWidth = (MaxInputLen + MaxOutputLen) * 7.0f + 60.0f;
+    const float Width = FMath::Clamp(FMath::Max(TitleWidth, PinsWidth) + 40.0f, 160.0f, 640.0f);
+    const float Height = FMath::Clamp(30.0f + NumPins * 22.0f + 20.0f, 80.0f, 800.0f);
+    return FVector2D(Width, Height);
+}
+
+float FUnrealMCPCommonUtils::NodeGap(const UEdGraphNode* A, const UEdGraphNode* B)
+{
+    if (!A || !B)
+    {
+        return 0.0f;
+    }
+    const FVector2D APos(A->NodePosX, A->NodePosY);
+    const FVector2D BPos(B->NodePosX, B->NodePosY);
+    const FVector2D ASize = EstimateNodeSize(A);
+    const FVector2D BSize = EstimateNodeSize(B);
+
+    // Axis-aligned edge-to-edge gap (0 when the boxes touch or overlap).
+    const float GapX = FMath::Max(0.0f, FMath::Max(APos.X, BPos.X) - FMath::Min(APos.X + ASize.X, BPos.X + BSize.X));
+    const float GapY = FMath::Max(0.0f, FMath::Max(APos.Y, BPos.Y) - FMath::Min(APos.Y + ASize.Y, BPos.Y + BSize.Y));
+    return FMath::Sqrt(GapX * GapX + GapY * GapY);
+}
+
+bool FUnrealMCPCommonUtils::ValidatePlacement(UEdGraph* Graph, UEdGraphNode* NewNode, FString& OutErrorMessage)
+{
+    if (!Graph || !NewNode)
+    {
+        return true;
+    }
+
+    const FVector2D Pos(NewNode->NodePosX, NewNode->NodePosY);
+    const FVector2D Size = EstimateNodeSize(NewNode);
+
+    for (UEdGraphNode* Other : Graph->Nodes)
+    {
+        if (!Other || Other == NewNode)
+        {
+            continue;
+        }
+        const FVector2D OPos(Other->NodePosX, Other->NodePosY);
+        const FVector2D OSize = EstimateNodeSize(Other);
+        const bool bOverlap =
+            (Pos.X < OPos.X + OSize.X) && (OPos.X < Pos.X + Size.X) &&
+            (Pos.Y < OPos.Y + OSize.Y) && (OPos.Y < Pos.Y + Size.Y);
+        if (bOverlap)
+        {
+            OutErrorMessage = FString::Printf(
+                TEXT("Node would overlap existing node '%s' (id %s) at (%d, %d). Pass a different node_position."),
+                *Other->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                *Other->NodeGuid.ToString(),
+                Other->NodePosX, Other->NodePosY);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool FUnrealMCPCommonUtils::FinalizePlacedNode(UEdGraph* Graph, UEdGraphNode* Node, FString& OutErrorMessage)
+{
+    if (!Graph || !Node)
+    {
+        return true;
+    }
+    if (ValidatePlacement(Graph, Node, OutErrorMessage))
+    {
+        return true;
+    }
+
+    // Rejected: remove the just-created node so the graph is left unchanged.
+    if (UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
+    {
+        FBlueprintEditorUtils::RemoveNode(Blueprint, Node, /*bDontRecompile*/ true);
+    }
+    else
+    {
+        Graph->RemoveNode(Node);
+    }
+    return false;
+}
+
+// Liang-Barsky: does segment P0->P1 intersect the axis-aligned box [Min, Max]?
+static bool SegmentIntersectsAABB(const FVector2D& P0, const FVector2D& P1, const FVector2D& Min, const FVector2D& Max)
+{
+    const FVector2D D = P1 - P0;
+    float T0 = 0.0f;
+    float T1 = 1.0f;
+    for (int32 Axis = 0; Axis < 2; ++Axis)
+    {
+        const float P = (Axis == 0) ? P0.X : P0.Y;
+        const float Dir = (Axis == 0) ? D.X : D.Y;
+        const float Lo = (Axis == 0) ? Min.X : Min.Y;
+        const float Hi = (Axis == 0) ? Max.X : Max.Y;
+        if (FMath::IsNearlyZero(Dir))
+        {
+            if (P < Lo || P > Hi)
+            {
+                return false; // parallel to this slab and outside it
+            }
+        }
+        else
+        {
+            float TA = (Lo - P) / Dir;
+            float TB = (Hi - P) / Dir;
+            if (TA > TB) { Swap(TA, TB); }
+            T0 = FMath::Max(T0, TA);
+            T1 = FMath::Min(T1, TB);
+            if (T0 > T1)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+UEdGraphNode* FUnrealMCPCommonUtils::FindWireOverlap(UEdGraphNode* Source, UEdGraphNode* Target, FString& OutErrorMessage)
+{
+    if (!Source || !Target)
+    {
+        return nullptr;
+    }
+    UEdGraph* Graph = Source->GetGraph();
+    if (!Graph || Target->GetGraph() != Graph)
+    {
+        return nullptr;
+    }
+
+    // Wire approx: source right-center -> target left-center (exact pin anchors need Slate).
+    const FVector2D SSize = EstimateNodeSize(Source);
+    const FVector2D TSize = EstimateNodeSize(Target);
+    const FVector2D P0(Source->NodePosX + SSize.X, Source->NodePosY + SSize.Y * 0.5f);
+    const FVector2D P1(Target->NodePosX, Target->NodePosY + TSize.Y * 0.5f);
+
+    for (UEdGraphNode* Other : Graph->Nodes)
+    {
+        if (!Other || Other == Source || Other == Target)
+        {
+            continue;
+        }
+        const FVector2D OMin(Other->NodePosX, Other->NodePosY);
+        const FVector2D OMax = OMin + EstimateNodeSize(Other);
+        if (SegmentIntersectsAABB(P0, P1, OMin, OMax))
+        {
+            OutErrorMessage = FString::Printf(
+                TEXT("Connection would cross node '%s' (id %s) at (%d, %d). Re-route so the wire does not pass over another node."),
+                *Other->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                *Other->NodeGuid.ToString(),
+                Other->NodePosX, Other->NodePosY);
+            return Other;
+        }
+    }
+    return nullptr;
 } 

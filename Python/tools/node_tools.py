@@ -198,11 +198,15 @@ def register_blueprint_node_tools(mcp: FastMCP):
         source_pin: str,
         target_node_id: str,
         target_pin: str,
-        graph_name: str = ""
+        graph_name: str = "",
+        max_connection_length: float = 600.0
     ) -> Dict[str, Any]:
         """
         Connect two nodes in a Blueprint's graph.
-        
+
+        Fails (returns an error and connects nothing) if the two nodes are farther apart
+        than max_connection_length units, or if the wire would route across another node's box.
+
         Args:
             blueprint_name: Name of the target Blueprint
             source_node_id: ID of the source node
@@ -210,7 +214,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
             target_node_id: ID of the target node
             target_pin: Name of the input pin on the target node
             graph_name: Optional graph name (can connect in 'UserConstructionScript', 'EventGraph', etc.)
-            
+            max_connection_length: Max gap (graph units) between the two nodes (default 600)
+
         Returns:
             Response indicating success or failure
         """
@@ -222,7 +227,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
                 "source_node_id": source_node_id,
                 "source_pin": source_pin,
                 "target_node_id": target_node_id,
-                "target_pin": target_pin
+                "target_pin": target_pin,
+                "max_connection_length": max_connection_length
             }
             if graph_name:
                 params["graph_name"] = graph_name
@@ -488,6 +494,9 @@ def register_blueprint_node_tools(mcp: FastMCP):
             - "for_loop"     : standard ForLoop macro, index range (params.first_index/last_index optional)
 
         Optional params.defaults: { "<pin>": value } sets literals on the new node's pins.
+
+        Placement is validated: if the node's (estimated) box would overlap an existing node,
+        the call FAILS with a descriptive error and adds nothing. Pass a free node_position.
 
         Args:
             blueprint_name: Name of the target Blueprint
