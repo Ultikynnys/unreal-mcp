@@ -5,6 +5,7 @@ Python/unreal_mcp.log
 .cursorrules
 .cursorignore
 CLAUDE.md
+.reasonix/
 
 # Code-copy related files
 .codeignore
