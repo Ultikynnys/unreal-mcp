@@ -82,6 +82,43 @@ namespace
     TMap<FString, TSharedPtr<FImportJobState>> GImportJobs;
     FCriticalSection GImportJobsMutex;
 
+    // ---------------------------------------------------------------------
+    // Async blueprint-plan jobs (polled via get_plan_status)
+    //
+    // apply_blueprint_plan parses a plan file, records a job here, and returns a
+    // job id immediately. A core-ticker lambda then applies the plan a chunk at a
+    // time on the game thread, so a large plan never blocks the MCP socket's
+    // response and never runs inside the dispatching game-thread task.
+    // ---------------------------------------------------------------------
+
+    struct FBlueprintPlanJobState
+    {
+        FString State;                  // queued | running | done | failed
+        FString Phase;                  // clearing | creating | connecting | defaults | finished
+        FString BlueprintName;
+        FString GraphName;
+
+        TArray<TSharedPtr<FJsonObject>> NodeOps;    // plan.nodes
+        TArray<TSharedPtr<FJsonObject>> EdgeOps;    // plan.edges
+        TArray<TSharedPtr<FJsonObject>> DefaultOps; // plan.defaults
+
+        int32 NodeCursor = 0;
+        int32 EdgeCursor = 0;
+        int32 DefaultCursor = 0;
+
+        int32 Total = 0;                // NodeOps + EdgeOps + DefaultOps
+        int32 Applied = 0;
+
+        TMap<FString, FString> Refs;                // plan ref -> created node guid
+        TArray<TSharedPtr<FJsonValue>> Failures;    // [{ "ref"/"op": ..., "error": ... }]
+
+        bool bClear = false;
+        bool bCleared = false;
+    };
+
+    TMap<FString, TSharedPtr<FBlueprintPlanJobState>> GPlanJobs;
+    FCriticalSection GPlanJobsMutex;
+
     // Applies optional texture import options to an imported texture and re-saves it.
     void ApplyTextureImportOptions(UTexture2D* Tex, const TSharedPtr<FJsonObject>& Options)
     {
@@ -287,6 +324,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("execute_python")) { return HandleExecutePython(Params); }
     else if (CommandType == TEXT("import_asset")) { return HandleImportAsset(Params); }
     else if (CommandType == TEXT("get_import_status")) { return HandleGetImportStatus(Params); }
+    else if (CommandType == TEXT("apply_blueprint_plan")) { return HandleApplyBlueprintPlan(Params); }
+    else if (CommandType == TEXT("get_plan_status")) { return HandleGetPlanStatus(Params); }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
@@ -310,6 +349,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
         TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server"),
         TEXT("import_asset"), TEXT("get_import_status"),
+        TEXT("apply_blueprint_plan"), TEXT("get_plan_status"),
         TEXT("delete_blueprint_node"), TEXT("clear_blueprint_graph"),
         TEXT("disconnect_blueprint_pin"), TEXT("get_blueprint_graphs"),
         TEXT("set_blueprint_node_pin_default")
@@ -1268,6 +1308,357 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetImportStatus(const TS
     TArray<TSharedPtr<FJsonValue>> LogArr;
     for (const FString& Line : Job->Log) { LogArr.Add(MakeShared<FJsonValueString>(Line)); }
     ResultObj->SetArrayField(TEXT("log"), LogArr);
+
+    return ResultObj;
+}
+
+// apply_blueprint_plan: build a whole graph from a plan file in one call.
+//
+// Plan schema:
+//   {
+//     "nodes":    [ {"ref":"n3","op":"node","node_type":"variable_get","params":{...},"pos":[x,y]},
+//                   {"ref":"n4","op":"function","function_name":"Reset","target":"...","params":{...},"pos":[x,y]},
+//                   {"ref":"n5","op":"component_ref","component_name":"Mesh","pos":[x,y]},
+//                   {"ref":"k1","op":"reroute","pos":[x,y]} ],
+//     "edges":    [ {"s":"n3","sp":"OutPin","t":"n4","tp":"InPin"} ],
+//     "defaults": [ {"ref":"n4","pin":"B","value":1} ]
+//   }
+// Each op is routed through the shared command router (SubCommandRouter), so this
+// reuses the real handlers (add_blueprint_node / add_blueprint_function_node /
+// add_blueprint_get_self_component_reference / add_blueprint_reroute_node /
+// connect_blueprint_nodes / set_blueprint_node_pin_default) rather than
+// duplicating node-creation logic. Refs created here are recorded and resolved for
+// edges/defaults, so the plan wires symbolically without a GUID round-trip.
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleApplyBlueprintPlan(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    // The plan itself: a path to a JSON file on disk (preferred for large plans)
+    // or an inline object.
+    TSharedPtr<FJsonObject> Plan;
+    FString PlanPath;
+    if (Params->TryGetStringField(TEXT("plan_path"), PlanPath) && !PlanPath.IsEmpty())
+    {
+        FString PlanText;
+        if (!FFileHelper::LoadFileToString(PlanText, *PlanPath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Could not read plan file: %s"), *PlanPath));
+        }
+        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PlanText);
+        if (!FJsonSerializer::Deserialize(Reader, Plan) || !Plan.IsValid())
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Could not parse plan JSON: %s"), *PlanPath));
+        }
+    }
+    else
+    {
+        const TSharedPtr<FJsonObject>* PlanObj = nullptr;
+        if (Params->TryGetObjectField(TEXT("plan"), PlanObj) && PlanObj)
+        {
+            Plan = *PlanObj;
+        }
+    }
+    if (!Plan.IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'plan_path' (file) or 'plan' (object) parameter"));
+    }
+
+    TSharedPtr<FBlueprintPlanJobState> Job = MakeShared<FBlueprintPlanJobState>();
+    Job->State = TEXT("queued");
+    Job->Phase = TEXT("queued");
+    Job->BlueprintName = BlueprintName;
+    Job->GraphName = GraphName;
+    Params->TryGetBoolField(TEXT("clear"), Job->bClear);
+
+    auto CollectOps = [](const TSharedPtr<FJsonObject>& PlanObj, const TCHAR* Field, TArray<TSharedPtr<FJsonObject>>& Out)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+        if (!PlanObj->TryGetArrayField(Field, Arr) || !Arr) { return; }
+        for (const TSharedPtr<FJsonValue>& V : *Arr)
+        {
+            const TSharedPtr<FJsonObject>* O = nullptr;
+            if (V.IsValid() && V->TryGetObject(O) && O) { Out.Add(*O); }
+        }
+    };
+    CollectOps(Plan, TEXT("nodes"), Job->NodeOps);
+    CollectOps(Plan, TEXT("edges"), Job->EdgeOps);
+    CollectOps(Plan, TEXT("defaults"), Job->DefaultOps);
+    Job->Total = Job->NodeOps.Num() + Job->EdgeOps.Num() + Job->DefaultOps.Num();
+
+    const FString JobId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    {
+        FScopeLock Lock(&GPlanJobsMutex);
+        GPlanJobs.Add(JobId, Job);
+    }
+
+    bool bAsync = true;
+    Params->TryGetBoolField(TEXT("async"), bAsync);
+
+    if (!bAsync)
+    {
+        // Small plans only: apply inline and report the final status in the reply.
+        // (A large plan must be async — the socket reply caps at ~5s.)
+        while (RunBlueprintPlanChunk(JobId, TNumericLimits<int32>::Max())) {}
+    }
+    else
+    {
+        // Defer to the core ticker: a chunk per tick, on the game thread, outside
+        // the dispatching task. Returns immediately so the socket never times out.
+        FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda(
+                [this, JobId](float) -> bool
+                {
+                    return RunBlueprintPlanChunk(JobId, 40);
+                }),
+            0.0f);
+    }
+
+    FString FinalState = TEXT("queued");
+    {
+        FScopeLock Lock(&GPlanJobsMutex);
+        TSharedPtr<FBlueprintPlanJobState>* Found = GPlanJobs.Find(JobId);
+        if (Found) { FinalState = (*Found)->State; }
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("job_id"), JobId);
+    ResultObj->SetNumberField(TEXT("total"), Job->Total);
+    ResultObj->SetStringField(TEXT("state"), FinalState);
+    return ResultObj;
+}
+
+// Applies up to Budget ops of a plan job. Returns true while work remains, so the
+// core-ticker lambda can reschedule itself. Must run on the game thread.
+bool FUnrealMCPEditorCommands::RunBlueprintPlanChunk(const FString& JobId, int32 Budget)
+{
+    TSharedPtr<FBlueprintPlanJobState> Job;
+    {
+        FScopeLock Lock(&GPlanJobsMutex);
+        TSharedPtr<FBlueprintPlanJobState>* Found = GPlanJobs.Find(JobId);
+        if (!Found) { return false; }
+        Job = *Found;
+    }
+
+    if (!SubCommandRouter)
+    {
+        Job->State = TEXT("failed");
+        Job->Phase = TEXT("finished");
+        TSharedPtr<FJsonObject> FailObj = MakeShared<FJsonObject>();
+        FailObj->SetStringField(TEXT("op"), TEXT("job"));
+        FailObj->SetStringField(TEXT("error"), TEXT("No command router injected; cannot apply plan."));
+        Job->Failures.Add(MakeShared<FJsonValueObject>(FailObj));
+        return false;
+    }
+
+    Job->State = TEXT("running");
+
+    auto bOk = [](const TSharedPtr<FJsonObject>& Res) -> bool
+    {
+        return Res.IsValid() && !Res->HasField(TEXT("error"));
+    };
+    auto RecordFailure = [&Job](const FString& What, const TSharedPtr<FJsonObject>& Res)
+    {
+        FString Err = TEXT("unknown error");
+        if (Res.IsValid() && Res->HasField(TEXT("error"))) { Err = Res->GetStringField(TEXT("error")); }
+        TSharedPtr<FJsonObject> FailObj = MakeShared<FJsonObject>();
+        FailObj->SetStringField(TEXT("op"), What);
+        FailObj->SetStringField(TEXT("error"), Err);
+        Job->Failures.Add(MakeShared<FJsonValueObject>(FailObj));
+    };
+    // A ref we never created is passed through verbatim, so a plan can wire a
+    // pre-existing node by its GUID or name.
+    auto Resolve = [&Job](const FString& Ref) -> FString
+    {
+        if (const FString* Found = Job->Refs.Find(Ref)) { return *Found; }
+        return Ref;
+    };
+
+    // One-time graph clear (keeps the entry node).
+    if (Job->bClear && !Job->bCleared)
+    {
+        Job->Phase = TEXT("clearing");
+        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+        P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+        P->SetStringField(TEXT("graph_name"), Job->GraphName);
+        TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("clear_blueprint_graph"), P);
+        if (!bOk(Res)) { RecordFailure(TEXT("clear"), Res); }
+        Job->bCleared = true;
+    }
+
+    int32 BudgetLeft = Budget;
+
+    // 1) Create nodes.
+    Job->Phase = TEXT("creating");
+    while (Job->NodeCursor < Job->NodeOps.Num() && BudgetLeft > 0)
+    {
+        TSharedPtr<FJsonObject> Op = Job->NodeOps[Job->NodeCursor];
+        FString OpKind;
+        Op->TryGetStringField(TEXT("op"), OpKind);
+        OpKind.ToLowerInline();
+
+        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+        P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+        P->SetStringField(TEXT("graph_name"), Job->GraphName);
+
+        const TArray<TSharedPtr<FJsonValue>>* PosArr = nullptr;
+        const bool bHasPos = Op->TryGetArrayField(TEXT("pos"), PosArr) && PosArr;
+
+        FString Command;
+        if (OpKind == TEXT("function"))
+        {
+            Command = TEXT("add_blueprint_function_node");
+            FString FnName; Op->TryGetStringField(TEXT("function_name"), FnName);
+            P->SetStringField(TEXT("function_name"), FnName);
+            FString Target;
+            if (Op->TryGetStringField(TEXT("target"), Target)) { P->SetStringField(TEXT("target"), Target); }
+            const TSharedPtr<FJsonObject>* Sub = nullptr;
+            if (Op->TryGetObjectField(TEXT("params"), Sub) && Sub) { P->SetObjectField(TEXT("params"), *Sub); }
+            if (bHasPos) { P->SetArrayField(TEXT("node_position"), *PosArr); }
+        }
+        else if (OpKind == TEXT("component_ref"))
+        {
+            Command = TEXT("add_blueprint_get_self_component_reference");
+            FString Comp; Op->TryGetStringField(TEXT("component_name"), Comp);
+            P->SetStringField(TEXT("component_name"), Comp);
+            if (bHasPos) { P->SetArrayField(TEXT("node_position"), *PosArr); }
+        }
+        else if (OpKind == TEXT("reroute"))
+        {
+            Command = TEXT("add_blueprint_reroute_node");
+            if (bHasPos) { P->SetArrayField(TEXT("position"), *PosArr); }
+        }
+        else
+        {
+            // Default: node_type dispatch (variable_get, branch, cast, ...).
+            Command = TEXT("add_blueprint_node");
+            FString NodeType; Op->TryGetStringField(TEXT("node_type"), NodeType);
+            P->SetStringField(TEXT("node_type"), NodeType);
+            const TSharedPtr<FJsonObject>* Sub = nullptr;
+            if (Op->TryGetObjectField(TEXT("params"), Sub) && Sub) { P->SetObjectField(TEXT("params"), *Sub); }
+            if (bHasPos) { P->SetArrayField(TEXT("node_position"), *PosArr); }
+        }
+
+        TSharedPtr<FJsonObject> Res = SubCommandRouter(Command, P);
+        FString Ref; Op->TryGetStringField(TEXT("ref"), Ref);
+        if (bOk(Res))
+        {
+            FString NodeId;
+            if (Res->TryGetStringField(TEXT("node_id"), NodeId) && !Ref.IsEmpty())
+            {
+                Job->Refs.Add(Ref, NodeId);
+            }
+        }
+        else
+        {
+            RecordFailure(Ref.IsEmpty() ? OpKind : Ref, Res);
+        }
+
+        Job->NodeCursor++;
+        Job->Applied++;
+        BudgetLeft--;
+    }
+    if (Job->NodeCursor < Job->NodeOps.Num()) { return true; }
+
+    // 2) Connect edges (refs resolved to the GUIDs captured above).
+    Job->Phase = TEXT("connecting");
+    while (Job->EdgeCursor < Job->EdgeOps.Num() && BudgetLeft > 0)
+    {
+        TSharedPtr<FJsonObject> Op = Job->EdgeOps[Job->EdgeCursor];
+        FString S, T, SP, TP;
+        Op->TryGetStringField(TEXT("s"), S);
+        Op->TryGetStringField(TEXT("t"), T);
+        Op->TryGetStringField(TEXT("sp"), SP);
+        Op->TryGetStringField(TEXT("tp"), TP);
+
+        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+        P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+        P->SetStringField(TEXT("graph_name"), Job->GraphName);
+        P->SetStringField(TEXT("source_node_id"), Resolve(S));
+        P->SetStringField(TEXT("target_node_id"), Resolve(T));
+        P->SetStringField(TEXT("source_pin"), SP);
+        P->SetStringField(TEXT("target_pin"), TP);
+
+        TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("connect_blueprint_nodes"), P);
+        if (!bOk(Res)) { RecordFailure(FString::Printf(TEXT("%s.%s -> %s.%s"), *S, *SP, *T, *TP), Res); }
+
+        Job->EdgeCursor++;
+        Job->Applied++;
+        BudgetLeft--;
+    }
+    if (Job->EdgeCursor < Job->EdgeOps.Num()) { return true; }
+
+    // 3) Pin defaults.
+    Job->Phase = TEXT("defaults");
+    while (Job->DefaultCursor < Job->DefaultOps.Num() && BudgetLeft > 0)
+    {
+        TSharedPtr<FJsonObject> Op = Job->DefaultOps[Job->DefaultCursor];
+        FString Ref, Pin;
+        Op->TryGetStringField(TEXT("ref"), Ref);
+        Op->TryGetStringField(TEXT("pin"), Pin);
+
+        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+        P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+        P->SetStringField(TEXT("graph_name"), Job->GraphName);
+        P->SetStringField(TEXT("node_id"), Resolve(Ref));
+        P->SetStringField(TEXT("pin_name"), Pin);
+        const TSharedPtr<FJsonValue> ValueJson = Op->TryGetField(TEXT("value"));
+        if (ValueJson.IsValid()) { P->SetField(TEXT("value"), ValueJson); }
+
+        TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("set_blueprint_node_pin_default"), P);
+        if (!bOk(Res)) { RecordFailure(FString::Printf(TEXT("%s.%s"), *Ref, *Pin), Res); }
+
+        Job->DefaultCursor++;
+        Job->Applied++;
+        BudgetLeft--;
+    }
+    if (Job->DefaultCursor < Job->DefaultOps.Num()) { return true; }
+
+    Job->Phase = TEXT("finished");
+    Job->State = TEXT("done");
+    return false;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetPlanStatus(const TSharedPtr<FJsonObject>& Params)
+{
+    FString JobId;
+    if (!Params->TryGetStringField(TEXT("job_id"), JobId))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'job_id' parameter"));
+    }
+
+    TSharedPtr<FBlueprintPlanJobState> Job;
+    {
+        FScopeLock Lock(&GPlanJobsMutex);
+        TSharedPtr<FBlueprintPlanJobState>* Found = GPlanJobs.Find(JobId);
+        if (!Found)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown job_id: %s"), *JobId));
+        }
+        Job = *Found;
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("job_id"), JobId);
+    ResultObj->SetStringField(TEXT("state"), Job->State);
+    ResultObj->SetStringField(TEXT("phase"), Job->Phase);
+    ResultObj->SetNumberField(TEXT("applied"), Job->Applied);
+    ResultObj->SetNumberField(TEXT("total"), Job->Total);
+    ResultObj->SetNumberField(TEXT("failure_count"), Job->Failures.Num());
+    ResultObj->SetArrayField(TEXT("failures"), Job->Failures);
+
+    TSharedPtr<FJsonObject> RefsObj = MakeShared<FJsonObject>();
+    for (const TPair<FString, FString>& Pair : Job->Refs)
+    {
+        RefsObj->SetStringField(Pair.Key, Pair.Value);
+    }
+    ResultObj->SetObjectField(TEXT("refs"), RefsObj);
 
     return ResultObj;
 }

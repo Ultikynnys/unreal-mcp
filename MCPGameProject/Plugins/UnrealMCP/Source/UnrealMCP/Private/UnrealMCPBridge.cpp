@@ -297,7 +297,9 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("batch_execute") ||
         CommandType == TEXT("execute_python") ||
         CommandType == TEXT("import_asset") ||
-        CommandType == TEXT("get_import_status"))
+        CommandType == TEXT("get_import_status") ||
+        CommandType == TEXT("apply_blueprint_plan") ||
+        CommandType == TEXT("get_plan_status"))
     {
         return EditorCommands->HandleCommand(CommandType, Params);
     }

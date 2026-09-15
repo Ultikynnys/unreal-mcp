@@ -75,6 +75,14 @@ private:
     TSharedPtr<FJsonObject> HandleImportAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetImportStatus(const TSharedPtr<FJsonObject>& Params);
 
+    // Async blueprint-plan jobs (applied in chunks on the core ticker; polled via
+    // get_plan_status). See HandleApplyBlueprintPlan for the plan schema.
+    TSharedPtr<FJsonObject> HandleApplyBlueprintPlan(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetPlanStatus(const TSharedPtr<FJsonObject>& Params);
+    // Applies up to Budget ops of the job and returns true while work remains
+    // (the ticker reschedules itself until false).
+    bool RunBlueprintPlanChunk(const FString& JobId, int32 Budget);
+
     // Optional full-command router, set by the bridge (see SetSubCommandRouter).
     // Empty until the bridge injects it, in which case batch_execute uses this
     // class's own editor-only HandleCommand table as a fallback.

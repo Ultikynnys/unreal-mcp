@@ -919,4 +919,101 @@ def register_blueprint_node_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def apply_blueprint_plan(
+        ctx: Context,
+        blueprint_name: str,
+        graph_name: str,
+        plan_path: str = "",
+        clear: bool = False,
+        async_: bool = True,
+        plan: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Build a whole Blueprint graph from a plan file in one call.
+
+        Async by default: returns {job_id, total, state} immediately and applies the
+        plan in chunks on the game thread (poll with get_plan_status). This sidesteps
+        the ~5s socket timeout that kills large batch_execute calls, and the plan
+        references nodes by symbolic 'ref' so no GUID round-trip is needed.
+
+        Plan schema:
+            {
+              "nodes":    [{"ref":"n1","op":"node","node_type":"variable_get",
+                            "params":{"variable_name":"Spline"},"pos":[0,0]},
+                           {"ref":"n2","op":"function","function_name":"Reset",
+                            "target":"...","params":{},"pos":[800,0]},
+                           {"ref":"n3","op":"component_ref","component_name":"Mesh","pos":[0,400]},
+                           {"ref":"k1","op":"reroute","pos":[1234,567]}],
+              "edges":    [{"s":"n1","sp":"Spline","t":"n2","tp":"self"}],
+              "defaults": [{"ref":"n2","pin":"B","value":1}]
+            }
+
+        ops: 'node' (node_type dispatch), 'function', 'component_ref', 'reroute'.
+
+        Args:
+            blueprint_name: Target Blueprint
+            graph_name: Target graph (e.g. 'ConstructSpline')
+            plan_path: Absolute path to a JSON plan on disk (preferred for large plans)
+            clear: Clear the graph first (keeps the entry node)
+            async_: Run over editor ticks (default True). False applies inline (small plans only).
+            plan: Inline plan object, used only when plan_path is empty
+
+        Returns:
+            {job_id, total, state}
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params: Dict[str, Any] = {
+                "blueprint_name": blueprint_name,
+                "graph_name": graph_name,
+                "clear": clear,
+                "async": async_,
+            }
+            if plan_path:
+                params["plan_path"] = plan_path
+            elif plan is not None:
+                params["plan"] = plan
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Applying blueprint plan to '{blueprint_name}.{graph_name}'")
+            response = unreal.send_command("apply_blueprint_plan", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error applying blueprint plan: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_plan_status(
+        ctx: Context,
+        job_id: str
+    ) -> Dict[str, Any]:
+        """Poll an apply_blueprint_plan job.
+
+        Returns:
+            {state: queued|running|done|failed, phase, applied, total,
+             failure_count, failures:[{op, error}], refs:{ref: guid}}
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_plan_status", {"job_id": job_id})
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error getting plan status: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Blueprint node tools registered successfully")
