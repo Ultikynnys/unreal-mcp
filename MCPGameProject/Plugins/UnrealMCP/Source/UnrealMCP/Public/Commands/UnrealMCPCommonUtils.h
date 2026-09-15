@@ -22,6 +22,7 @@ class UK2Node_CustomEvent;
 class UK2Node_MacroInstance;
 class UK2Node_BreakStruct;
 class UK2Node_MakeStruct;
+class UK2Node_Knot;
 class UScriptStruct;
 class UClass;
 class UFunction;
@@ -59,6 +60,7 @@ public:
     static UK2Node_VariableSet* CreateVariableSetNode(UEdGraph* Graph, UBlueprint* Blueprint, const FString& VariableName, const FVector2D& Position);
     static UK2Node_InputAction* CreateInputActionNode(UEdGraph* Graph, const FString& ActionName, const FVector2D& Position);
     static UK2Node_Self* CreateSelfReferenceNode(UEdGraph* Graph, const FVector2D& Position);
+    static UK2Node_Knot* CreateKnotNode(UEdGraph* Graph, const FVector2D& Position);
     static UK2Node_IfThenElse* CreateBranchNode(UEdGraph* Graph, const FVector2D& Position);
     static UK2Node_ExecutionSequence* CreateSequenceNode(UEdGraph* Graph, int32 NumOutputs, const FVector2D& Position);
     static UK2Node_DynamicCast* CreateCastNode(UEdGraph* Graph, UClass* TargetClass, const FVector2D& Position);
@@ -80,6 +82,16 @@ public:
     static bool ValidatePlacement(UEdGraph* Graph, UEdGraphNode* NewNode, FString& OutErrorMessage);
     static bool FinalizePlacedNode(UEdGraph* Graph, UEdGraphNode* Node, FString& OutErrorMessage);
     static UEdGraphNode* FindWireOverlap(UEdGraphNode* Source, UEdGraphNode* Target, FString& OutErrorMessage);
+    static bool NodesOverlap(const UEdGraphNode* A, const UEdGraphNode* B);
+    static void CollectGraphEdges(UEdGraph* Graph, TArray<TPair<UEdGraphNode*, UEdGraphNode*>>& OutEdges);
+    static bool IsStructuralNode(const UEdGraphNode* Node);
+
+    // Engine state utilities
+    // Returns true only when it is safe to perform object/asset lookups (LoadObject,
+    // LoadAsset, StaticFindObject chains). The engine fatal-asserts those calls while a
+    // package is being saved (GIsSavingPackage) or while the game thread is garbage
+    // collecting, which crashes the editor. When false, OutReason explains why.
+    static bool IsObjectLookupSafe(FString& OutReason);
 
     // Property utilities
     static bool SetObjectProperty(UObject* Object, const FString& PropertyName, 

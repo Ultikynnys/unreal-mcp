@@ -18,6 +18,7 @@
 #include "K2Node_MacroInstance.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_MakeStruct.h"
+#include "K2Node_Knot.h"
 #include "K2Node_FunctionEntry.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -89,9 +90,21 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     {
         return HandleGetBlueprintGraphs(Params);
     }
+    else if (CommandType == TEXT("validate_blueprint_graph"))
+    {
+        return HandleValidateBlueprintGraph(Params);
+    }
     else if (CommandType == TEXT("set_blueprint_node_pin_default"))
     {
         return HandleSetBlueprintNodePinDefault(Params);
+    }
+    else if (CommandType == TEXT("set_blueprint_node_position"))
+    {
+        return HandleSetBlueprintNodePosition(Params);
+    }
+    else if (CommandType == TEXT("add_blueprint_reroute_node"))
+    {
+        return HandleAddBlueprintRerouteNode(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -1780,5 +1793,307 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleGetBlueprintGraph
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("graphs"), GraphsArray);
     ResultObj->SetStringField(TEXT("blueprint_name"), BlueprintName);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleValidateBlueprintGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    float MaxConnectionLength = 600.0f;
+    if (Params->HasField(TEXT("max_connection_length")))
+    {
+        MaxConnectionLength = (float)Params->GetNumberField(TEXT("max_connection_length"));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    // Scan one named graph, or every graph in the Blueprint.
+    TArray<UEdGraph*> Graphs;
+    if (!GraphName.IsEmpty())
+    {
+        UEdGraph* Named = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+        if (!Named)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+        }
+        Graphs.Add(Named);
+    }
+    else
+    {
+        Blueprint->GetAllGraphs(Graphs);
+    }
+
+    auto NodeLabel = [](UEdGraphNode* N) -> FString
+    {
+        return FString::Printf(TEXT("%s (id %s)"), *N->GetNodeTitle(ENodeTitleType::ListView).ToString(), *N->NodeGuid.ToString());
+    };
+
+    TArray<TSharedPtr<FJsonValue>> Issues;
+    for (UEdGraph* Graph : Graphs)
+    {
+        if (!Graph) { continue; }
+        const FString GName = Graph->GetName();
+
+        // 1) node-on-node overlap (all pairs, not first hit)
+        for (int32 i = 0; i < Graph->Nodes.Num(); ++i)
+        {
+            for (int32 j = i + 1; j < Graph->Nodes.Num(); ++j)
+            {
+                UEdGraphNode* A = Graph->Nodes[i];
+                UEdGraphNode* B = Graph->Nodes[j];
+                if (!A || !B) { continue; }
+                if (FUnrealMCPCommonUtils::NodesOverlap(A, B))
+                {
+                    TSharedPtr<FJsonObject> Issue = MakeShared<FJsonObject>();
+                    Issue->SetStringField(TEXT("kind"), TEXT("node_overlap"));
+                    Issue->SetStringField(TEXT("graph"), GName);
+                    Issue->SetStringField(TEXT("a"), NodeLabel(A));
+                    Issue->SetStringField(TEXT("b"), NodeLabel(B));
+                    Issues.Add(MakeShared<FJsonValueObject>(Issue));
+                }
+            }
+        }
+
+        // 2) + 3) existing connections: over-long wires and wires crossing a node
+        TArray<TPair<UEdGraphNode*, UEdGraphNode*>> Edges;
+        FUnrealMCPCommonUtils::CollectGraphEdges(Graph, Edges);
+        for (const TPair<UEdGraphNode*, UEdGraphNode*>& Edge : Edges)
+        {
+            UEdGraphNode* Src = Edge.Key;
+            UEdGraphNode* Tgt = Edge.Value;
+            if (!Src || !Tgt) { continue; }
+
+            const float Gap = FUnrealMCPCommonUtils::NodeGap(Src, Tgt);
+            if (Gap > MaxConnectionLength)
+            {
+                TSharedPtr<FJsonObject> Issue = MakeShared<FJsonObject>();
+                Issue->SetStringField(TEXT("kind"), TEXT("long_connection"));
+                Issue->SetStringField(TEXT("graph"), GName);
+                Issue->SetStringField(TEXT("from"), NodeLabel(Src));
+                Issue->SetStringField(TEXT("to"), NodeLabel(Tgt));
+                Issue->SetNumberField(TEXT("gap"), Gap);
+                Issue->SetNumberField(TEXT("max"), MaxConnectionLength);
+                Issues.Add(MakeShared<FJsonValueObject>(Issue));
+            }
+
+            FString WireError;
+            if (UEdGraphNode* Crossed = FUnrealMCPCommonUtils::FindWireOverlap(Src, Tgt, WireError))
+            {
+                TSharedPtr<FJsonObject> Issue = MakeShared<FJsonObject>();
+                Issue->SetStringField(TEXT("kind"), TEXT("wire_crosses_node"));
+                Issue->SetStringField(TEXT("graph"), GName);
+                Issue->SetStringField(TEXT("from"), NodeLabel(Src));
+                Issue->SetStringField(TEXT("to"), NodeLabel(Tgt));
+                Issue->SetStringField(TEXT("crosses"), NodeLabel(Crossed));
+                Issues.Add(MakeShared<FJsonValueObject>(Issue));
+            }
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint_name"), BlueprintName);
+    ResultObj->SetNumberField(TEXT("issue_count"), Issues.Num());
+    ResultObj->SetBoolField(TEXT("valid"), Issues.Num() == 0);
+    ResultObj->SetArrayField(TEXT("issues"), Issues);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleSetBlueprintNodePosition(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString NodeId;
+    if (!Params->TryGetStringField(TEXT("node_id"), NodeId))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_id' parameter"));
+    }
+
+    if (!Params->HasField(TEXT("position")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'position' parameter (expected [X, Y])"));
+    }
+    const FVector2D NewPosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("position"));
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    float MaxConnectionLength = 600.0f;
+    if (Params->HasField(TEXT("max_connection_length")))
+    {
+        MaxConnectionLength = (float)Params->GetNumberField(TEXT("max_connection_length"));
+    }
+
+    bool bForce = false;
+    Params->TryGetBoolField(TEXT("force"), bForce);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* PreferredGraph = nullptr;
+    if (!GraphName.IsEmpty())
+    {
+        PreferredGraph = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+    }
+
+    UEdGraphNode* Node = FUnrealMCPCommonUtils::FindNodeByGuid(Blueprint, NodeId, PreferredGraph);
+    if (!Node)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Node not found: %s"), *NodeId));
+    }
+
+    UEdGraph* Graph = Node->GetGraph();
+    if (!Graph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Node %s is not in a graph"), *NodeId));
+    }
+
+    const int32 OldX = Node->NodePosX;
+    const int32 OldY = Node->NodePosY;
+
+    // Apply the move, then re-validate. Reject (and revert) rather than silently break a rule.
+    Node->Modify();
+    Node->NodePosX = FMath::RoundToInt(NewPosition.X);
+    Node->NodePosY = FMath::RoundToInt(NewPosition.Y);
+
+    if (!bForce)
+    {
+        FString PlacementError;
+        if (!FUnrealMCPCommonUtils::ValidatePlacement(Graph, Node, PlacementError))
+        {
+            Node->NodePosX = OldX;
+            Node->NodePosY = OldY;
+            return FUnrealMCPCommonUtils::CreateErrorResponse(PlacementError);
+        }
+
+        // Re-check the moved node's incident wires (length + crossing) against the new position.
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (!Pin) { continue; }
+            for (UEdGraphPin* Linked : Pin->LinkedTo)
+            {
+                if (!Linked) { continue; }
+                UEdGraphNode* Other = Linked->GetOwningNode();
+                if (!Other) { continue; }
+
+                const float Gap = FUnrealMCPCommonUtils::NodeGap(Node, Other);
+                if (Gap > MaxConnectionLength)
+                {
+                    Node->NodePosX = OldX;
+                    Node->NodePosY = OldY;
+                    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                        TEXT("Move rejected: the wire between '%s' and '%s' would span %g units (> max_connection_length %g). Move them closer or pass force=true."),
+                        *Node->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                        *Other->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                        Gap, MaxConnectionLength));
+                }
+
+                FString WireError;
+                UEdGraphNode* Crossed = (Pin->Direction == EGPD_Output)
+                    ? FUnrealMCPCommonUtils::FindWireOverlap(Node, Other, WireError)
+                    : FUnrealMCPCommonUtils::FindWireOverlap(Other, Node, WireError);
+                if (Crossed)
+                {
+                    Node->NodePosX = OldX;
+                    Node->NodePosY = OldY;
+                    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                        TEXT("Move rejected: %s Move the node elsewhere or add a reroute node (add_blueprint_reroute_node)."),
+                        *WireError));
+                }
+            }
+        }
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TArray<TSharedPtr<FJsonValue>> OldPosArray;
+    OldPosArray.Add(MakeShared<FJsonValueNumber>(OldX));
+    OldPosArray.Add(MakeShared<FJsonValueNumber>(OldY));
+    TArray<TSharedPtr<FJsonValue>> NewPosArray;
+    NewPosArray.Add(MakeShared<FJsonValueNumber>(Node->NodePosX));
+    NewPosArray.Add(MakeShared<FJsonValueNumber>(Node->NodePosY));
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+    ResultObj->SetArrayField(TEXT("old_position"), OldPosArray);
+    ResultObj->SetArrayField(TEXT("position"), NewPosArray);
+    ResultObj->SetBoolField(TEXT("forced"), bForce);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintRerouteNode(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FVector2D Position(0.0f, 0.0f);
+    if (Params->HasField(TEXT("position")))
+    {
+        Position = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("position"));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* TargetGraph = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+    if (!TargetGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+    }
+
+    // Reroute/knot nodes are structural: exempt from overlap checks and never reported as
+    // "crossed", which is exactly what lets a wire bend around an obstacle.
+    UK2Node_Knot* KnotNode = FUnrealMCPCommonUtils::CreateKnotNode(TargetGraph, Position);
+    if (!KnotNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create reroute node"));
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("node_id"), KnotNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("node_type"), TEXT("reroute"));
+
+    TArray<TSharedPtr<FJsonValue>> PinsArray;
+    for (UEdGraphPin* Pin : KnotNode->Pins)
+    {
+        if (!Pin) { continue; }
+        TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+        PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+        PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
+        PinObj->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+        PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+    }
+    ResultObj->SetArrayField(TEXT("pins"), PinsArray);
     return ResultObj;
 } 

@@ -769,4 +769,154 @@ def register_blueprint_node_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def validate_blueprint_graph(
+        ctx: Context,
+        blueprint_name: str,
+        graph_name: str = "",
+        max_connection_length: float = 600.0
+    ) -> Dict[str, Any]:
+        """Audit an existing Blueprint graph for the same design-rule breaks that node
+        creation and connection enforce at mutation time.
+
+        Read-only: it reports issues and never modifies the graph. The three rules checked are:
+          - node_overlap: two nodes' bounding boxes intersect
+          - long_connection: an existing wire's node gap exceeds max_connection_length
+          - wire_crosses_node: an existing wire's path crosses another node's box
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            graph_name: Optional graph name to scan; defaults to every graph in the Blueprint
+            max_connection_length: Max allowed gap (graph units) between connected nodes (default 600)
+
+        Returns:
+            Dict with 'valid' (bool), 'issue_count', and 'issues' (list of broken rules)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params = {
+                "blueprint_name": blueprint_name,
+                "max_connection_length": max_connection_length
+            }
+            if graph_name:
+                params["graph_name"] = graph_name
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Validating graph(s) in blueprint '{blueprint_name}'")
+            response = unreal.send_command("validate_blueprint_graph", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error validating blueprint graph: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def set_blueprint_node_position(
+        ctx: Context,
+        blueprint_name: str,
+        node_id: str,
+        position: List[float],
+        graph_name: str = "",
+        max_connection_length: float = 600.0,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """Move an existing node in a Blueprint graph to a new position.
+
+        The move is re-validated against the graph design rules and the call FAILS
+        (position reverted) if the new spot would overlap another node, stretch an
+        incident wire past max_connection_length, or route a wire across a node.
+        Pass force=True to skip validation (e.g. a multi-step re-layout that must
+        pass through a transiently invalid state).
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            node_id: GUID or node name of the node to move
+            position: New [X, Y] graph position
+            graph_name: Optional graph name (defaults to 'EventGraph')
+            max_connection_length: Max allowed wire gap (default 600)
+            force: Skip rule validation (default False)
+
+        Returns:
+            Dict with node_id, old_position, position, and forced flag
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params = {
+                "blueprint_name": blueprint_name,
+                "node_id": node_id,
+                "position": position,
+                "max_connection_length": max_connection_length,
+                "force": force
+            }
+            if graph_name:
+                params["graph_name"] = graph_name
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Moving node '{node_id}' in blueprint '{blueprint_name}' to {position}")
+            response = unreal.send_command("set_blueprint_node_position", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error moving node: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def add_blueprint_reroute_node(
+        ctx: Context,
+        blueprint_name: str,
+        position: Optional[List[float]] = None,
+        graph_name: str = ""
+    ) -> Dict[str, Any]:
+        """Add a reroute (knot) node to a Blueprint graph.
+
+        A reroute node is a tiny pass-through used to bend a wire around an obstacle.
+        Wire it with connect_blueprint_nodes: source -> 'InputPin', 'OutputPin' -> target.
+        Reroute nodes are exempt from the overlap and wire-cross design rules.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            position: Optional [X, Y] graph position (defaults to [0, 0])
+            graph_name: Optional graph name (defaults to 'EventGraph')
+
+        Returns:
+            Dict with node_id, node_type, and the node's pins
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            if position is None:
+                position = [0, 0]
+            params = {
+                "blueprint_name": blueprint_name,
+                "position": position
+            }
+            if graph_name:
+                params["graph_name"] = graph_name
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Adding reroute node to blueprint '{blueprint_name}' at {position}")
+            response = unreal.send_command("add_blueprint_reroute_node", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error adding reroute node: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Blueprint node tools registered successfully")

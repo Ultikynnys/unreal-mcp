@@ -219,7 +219,27 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         try
         {
             TSharedPtr<FJsonObject> ResultJson;
-            
+
+            // Fail fast instead of crashing: LoadObject/LoadAsset/StaticFindObject
+            // fatal-assert while a package is being saved or the game thread is GCing.
+            // ping/reload_server touch no UObjects, so let them through.
+            if (CommandType != TEXT("ping") && CommandType != TEXT("reload_server"))
+            {
+                FString BusyReason;
+                if (!FUnrealMCPCommonUtils::IsObjectLookupSafe(BusyReason))
+                {
+                    ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
+                    ResponseJson->SetStringField(TEXT("error"),
+                        FString::Printf(TEXT("Editor busy: %s. Retry shortly."), *BusyReason));
+
+                    FString BusyString;
+                    TSharedRef<TJsonWriter<>> BusyWriter = TJsonWriterFactory<>::Create(&BusyString);
+                    FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), BusyWriter);
+                    Promise.SetValue(BusyString);
+                    return;
+                }
+            }
+
             if (CommandType == TEXT("ping"))
             {
                 ResultJson = MakeShareable(new FJsonObject);
@@ -300,6 +320,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("clear_blueprint_graph") ||
                      CommandType == TEXT("disconnect_blueprint_pin") ||
                      CommandType == TEXT("get_blueprint_graphs") ||
+                     CommandType == TEXT("validate_blueprint_graph") ||
+                     CommandType == TEXT("set_blueprint_node_position") ||
+                     CommandType == TEXT("add_blueprint_reroute_node") ||
                      CommandType == TEXT("set_blueprint_node_pin_default"))
             {
                 ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);

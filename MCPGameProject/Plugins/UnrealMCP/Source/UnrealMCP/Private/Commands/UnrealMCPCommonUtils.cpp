@@ -17,6 +17,8 @@
 #include "K2Node_MacroInstance.h"
 #include "K2Node_BreakStruct.h"
 #include "K2Node_MakeStruct.h"
+#include "K2Node_Knot.h"
+#include "EdGraphNode_Comment.h"
 #include "Kismet/GameplayStatics.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -25,6 +27,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/UObjectGlobals.h"
 #include "Engine/Selection.h"
 #include "EditorAssetLibrary.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -151,6 +154,26 @@ FRotator FUnrealMCPCommonUtils::GetRotatorFromJson(const TSharedPtr<FJsonObject>
     }
     
     return Result;
+}
+
+// Engine state utilities
+bool FUnrealMCPCommonUtils::IsObjectLookupSafe(FString& OutReason)
+{
+    // StaticFindObjectFast() fatal-asserts in the engine (UObjectGlobals.cpp:
+    // "Illegal call to StaticFindObjectFast() while serializing object data or
+    // garbage collecting!") when either of these globals is set. Match the engine's
+    // own conditions so callers refuse the lookup instead of crashing the editor.
+    if (GIsSavingPackage)
+    {
+        OutReason = TEXT("editor is saving a package (GIsSavingPackage); asset lookups are unsafe until the save completes");
+        return false;
+    }
+    if (IsGarbageCollectingOnGameThread())
+    {
+        OutReason = TEXT("game thread is garbage collecting; asset lookups are unsafe until GC completes");
+        return false;
+    }
+    return true;
 }
 
 // Blueprint Utilities
@@ -575,6 +598,25 @@ UK2Node_Self* FUnrealMCPCommonUtils::CreateSelfReferenceNode(UEdGraph* Graph, co
     SelfNode->AllocateDefaultPins();
     
     return SelfNode;
+}
+
+UK2Node_Knot* FUnrealMCPCommonUtils::CreateKnotNode(UEdGraph* Graph, const FVector2D& Position)
+{
+    // A reroute (knot) node is a tiny pass-through used to bend a wire around an obstacle.
+    if (!Graph)
+    {
+        return nullptr;
+    }
+
+    UK2Node_Knot* KnotNode = NewObject<UK2Node_Knot>(Graph);
+    KnotNode->NodePosX = Position.X;
+    KnotNode->NodePosY = Position.Y;
+    Graph->AddNode(KnotNode, true);
+    KnotNode->CreateNewGuid();
+    KnotNode->PostPlacedNewNode();
+    KnotNode->AllocateDefaultPins();
+
+    return KnotNode;
 }
 
 UK2Node_IfThenElse* FUnrealMCPCommonUtils::CreateBranchNode(UEdGraph* Graph, const FVector2D& Position)
@@ -1293,21 +1335,13 @@ bool FUnrealMCPCommonUtils::ValidatePlacement(UEdGraph* Graph, UEdGraphNode* New
         return true;
     }
 
-    const FVector2D Pos(NewNode->NodePosX, NewNode->NodePosY);
-    const FVector2D Size = EstimateNodeSize(NewNode);
-
     for (UEdGraphNode* Other : Graph->Nodes)
     {
         if (!Other || Other == NewNode)
         {
             continue;
         }
-        const FVector2D OPos(Other->NodePosX, Other->NodePosY);
-        const FVector2D OSize = EstimateNodeSize(Other);
-        const bool bOverlap =
-            (Pos.X < OPos.X + OSize.X) && (OPos.X < Pos.X + Size.X) &&
-            (Pos.Y < OPos.Y + OSize.Y) && (OPos.Y < Pos.Y + Size.Y);
-        if (bOverlap)
+        if (NodesOverlap(Other, NewNode))
         {
             OutErrorMessage = FString::Printf(
                 TEXT("Node would overlap existing node '%s' (id %s) at (%d, %d). Pass a different node_position."),
@@ -1398,7 +1432,7 @@ UEdGraphNode* FUnrealMCPCommonUtils::FindWireOverlap(UEdGraphNode* Source, UEdGr
 
     for (UEdGraphNode* Other : Graph->Nodes)
     {
-        if (!Other || Other == Source || Other == Target)
+        if (!Other || Other == Source || Other == Target || IsStructuralNode(Other))
         {
             continue;
         }
@@ -1415,4 +1449,68 @@ UEdGraphNode* FUnrealMCPCommonUtils::FindWireOverlap(UEdGraphNode* Source, UEdGr
         }
     }
     return nullptr;
+}
+
+bool FUnrealMCPCommonUtils::IsStructuralNode(const UEdGraphNode* Node)
+{
+    // Comment nodes are containers (they are meant to enclose other nodes) and reroute/knot
+    // nodes are tiny pass-through dots whose true size the estimate grossly overstates. Both
+    // are excluded from overlap and wire-crossing checks so they do not swamp the results.
+    return Node && (Node->IsA<UEdGraphNode_Comment>() || Node->IsA<UK2Node_Knot>());
+}
+
+bool FUnrealMCPCommonUtils::NodesOverlap(const UEdGraphNode* A, const UEdGraphNode* B)
+{
+    if (IsStructuralNode(A) || IsStructuralNode(B))
+    {
+        return false;
+    }
+    if (!A || !B || A == B)
+    {
+        return false;
+    }
+    const FVector2D APos(A->NodePosX, A->NodePosY);
+    const FVector2D BPos(B->NodePosX, B->NodePosY);
+    const FVector2D ASize = EstimateNodeSize(A);
+    const FVector2D BSize = EstimateNodeSize(B);
+    return (APos.X < BPos.X + BSize.X) && (BPos.X < APos.X + ASize.X) &&
+           (APos.Y < BPos.Y + BSize.Y) && (BPos.Y < APos.Y + ASize.Y);
+}
+
+void FUnrealMCPCommonUtils::CollectGraphEdges(UEdGraph* Graph, TArray<TPair<UEdGraphNode*, UEdGraphNode*>>& OutEdges)
+{
+    if (!Graph)
+    {
+        return;
+    }
+    TSet<FString> Seen;
+    for (UEdGraphNode* Node : Graph->Nodes)
+    {
+        if (!Node)
+        {
+            continue;
+        }
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (!Pin || Pin->Direction != EGPD_Output)
+            {
+                continue;
+            }
+            for (UEdGraphPin* Linked : Pin->LinkedTo)
+            {
+                UEdGraphNode* Other = Linked ? Linked->GetOwningNode() : nullptr;
+                if (!Other || Other == Node)
+                {
+                    continue;
+                }
+                const FString Key = Node->NodeGuid.ToString() + TEXT("->") + Other->NodeGuid.ToString();
+                if (Seen.Contains(Key))
+                {
+                    continue;
+                }
+                Seen.Add(Key);
+                OutEdges.Add(TPair<UEdGraphNode*, UEdGraphNode*>(Node, Other));
+            }
+        }
+    }
 } 
