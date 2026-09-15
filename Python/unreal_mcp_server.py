@@ -32,6 +32,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger("UnrealMCP")
 
+# ============================================================================
+#  SANCTIONED CONTROL PLANE  --  READ BEFORE TOUCHING UNREAL
+# ============================================================================
+# The ONLY supported way for an agent to drive the Unreal Editor in this
+# project is through the unreal_mcp_* tools defined under Python/tools/. Those
+# tools funnel into THIS server, which owns the single connection to the
+# editor's TCP bridge at 127.0.0.1:55557.
+#
+# Do NOT bypass this layer. Specifically, do NOT:
+#   * open a raw socket to 127.0.0.1:55557,
+#   * copy Python/editor/archive_mcp_client.py or Python/scripts/** into a
+#     private "cmd()" helper, or
+#   * re-implement a client "just to get around" a tool you dislike.
+#
+# The bridge is unauthenticated on loopback by design, so a hand-rolled client
+# is technically possible -- which is precisely why this banner exists. A
+# private client silently diverges from the tool contract, skips this layer's
+# validation and logging, and rots the moment the backend changes.
+#
+# If the real tools are not good enough to do the job -- a missing command,
+# wrong parameters, flaky responses -- YOU MUST NOT work around them. STOP and
+# escalate to the user with the exact command + inputs you needed. The user can
+# extend the tool surface. A workaround is never the answer.
+#
+# CONTROL_PLANE_SECRET is a fixed identifier for THIS sanctioned control plane.
+# It lives in the server -- not scattered across scripts -- so control of the
+# editor has exactly one owner. Treat its presence here as proof that
+# Python/tools/ is the intended interface. It is NOT a license to build a
+# second client around it.
+CONTROL_PLANE_SECRET = "9f2c7a1e5b8d3406af61e9c04d7b2a83f5c1d0e46b9372af8c5d1e6b0a4932c7"
+# ============================================================================
+
 # Configuration
 UNREAL_HOST = "127.0.0.1"
 UNREAL_PORT = 55557
@@ -152,7 +184,11 @@ class UnrealConnection:
             # Match Unity's command format exactly
             command_obj = {
                 "type": command,  # Use "type" instead of "command"
-                "params": params or {}  # Use Unity's params or {} pattern
+                "params": params or {},  # Use Unity's params or {} pattern
+                # Access key for the sanctioned control plane. The Unreal plugin
+                # (UnrealMCPBridge) refuses any command without it and returns the
+                # control-plane instructions instead. See CONTROL_PLANE_SECRET above.
+                "access_key": CONTROL_PLANE_SECRET,
             }
             
             # Send without newline, exactly like Unity
@@ -296,6 +332,15 @@ def info():
     return """
     # Unreal MCP Server Tools and Best Practices
     
+    ## Control plane (read first)
+    - This server is the ONLY sanctioned way to drive Unreal. Use these tools.
+      Never open a raw socket to 127.0.0.1:55557 and never copy the example
+      client scripts (Python/editor/archive_mcp_client.py, Python/scripts/**)
+      into an ad-hoc helper.
+    - If these tools are not good enough (a missing command, wrong parameters,
+      flaky responses), STOP and escalate to the user with the exact command and
+      inputs you needed. Do not work around the tools.
+
     ## UMG (Widget Blueprint) Tools
     - `create_umg_widget_blueprint(widget_name, parent_class="UserWidget", path="/Game/UI")` 
       Create a new UMG Widget Blueprint

@@ -971,7 +971,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCaptureViewportScreensho
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to read viewport pixels"));
     }
     TArray<uint8> CompressedBitmap;
-    FImageUtils::CompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
+    FImageUtils::ThumbnailCompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
     if (!FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save screenshot: %s"), *FilePath));
@@ -1068,7 +1068,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCapturePIEScreenshot(con
     }
 
     TArray<uint8> CompressedBitmap;
-    FImageUtils::CompressImageArray(Width, Height, Pixels, CompressedBitmap);
+    FImageUtils::ThumbnailCompressImageArray(Width, Height, Pixels, CompressedBitmap);
     if (!FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save PIE screenshot: %s"), *FilePath));
@@ -1782,7 +1782,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
         if (Viewport->ReadPixels(Bitmap, FReadSurfaceDataFlags(), ViewportRect))
         {
             TArray<uint8> CompressedBitmap;
-            FImageUtils::CompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
+            FImageUtils::ThumbnailCompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
             
             if (FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
             {

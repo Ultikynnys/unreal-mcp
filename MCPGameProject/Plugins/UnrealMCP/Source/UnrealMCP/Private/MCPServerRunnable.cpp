@@ -98,7 +98,9 @@ uint32 FMCPServerRunnable::Run()
                                 {
                                     CommandParams = MakeShared<FJsonObject>();
                                 }
-                                FString Response = Bridge->ExecuteCommand(CommandType, CommandParams);
+                                FString AccessKey;
+                                JsonObject->TryGetStringField(TEXT("access_key"), AccessKey);
+                                FString Response = Bridge->ExecuteCommand(CommandType, CommandParams, AccessKey);
                                 
                                 // Log response for debugging
                                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
@@ -323,7 +325,9 @@ void FMCPServerRunnable::ProcessMessage(TSharedPtr<FSocket> Client, const FStrin
     UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Executing command: %s"), *CommandType);
     
     // Execute command
-    FString Response = Bridge->ExecuteCommand(CommandType, Params);
+    FString AccessKey;
+    JsonMessage->TryGetStringField(TEXT("access_key"), AccessKey);
+    FString Response = Bridge->ExecuteCommand(CommandType, Params, AccessKey);
     
     // Send response with newline terminator
     Response += TEXT("\n");

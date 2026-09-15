@@ -168,7 +168,7 @@ bool FUnrealMCPCommonUtils::IsObjectLookupSafe(FString& OutReason)
         OutReason = TEXT("editor is saving a package (GIsSavingPackage); asset lookups are unsafe until the save completes");
         return false;
     }
-    if (IsGarbageCollectingOnGameThread())
+    if (GIsGarbageCollecting)
     {
         OutReason = TEXT("game thread is garbage collecting; asset lookups are unsafe until GC completes");
         return false;

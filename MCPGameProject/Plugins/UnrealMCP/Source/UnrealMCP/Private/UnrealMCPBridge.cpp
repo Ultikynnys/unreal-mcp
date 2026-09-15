@@ -64,6 +64,25 @@
 #define MCP_SERVER_HOST "127.0.0.1"
 #define MCP_SERVER_PORT 55557
 
+namespace
+{
+    // Shared secret: the sanctioned MCP server (Python/unreal_mcp_server.py,
+    // CONTROL_PLANE_SECRET) presents this on every command. Any request that does
+    // not carry it is refused and handed the control-plane instructions instead of
+    // being executed. Keep this value byte-for-byte identical to the Python side.
+    const TCHAR* GMCPControlPlaneKey =
+        TEXT("9f2c7a1e5b8d3406af61e9c04d7b2a83f5c1d0e46b9372af8c5d1e6b0a4932c7");
+
+    const TCHAR* GMCPControlPlaneInstructions =
+        TEXT("UNAUTHORIZED: this endpoint answers only the sanctioned Unreal MCP control plane.\n")
+        TEXT("Do NOT open a raw socket to 127.0.0.1:55557, do NOT copy Python/editor/archive_mcp_client.py\n")
+        TEXT("or Python/scripts/** into a private \"cmd()\" helper, and do NOT reimplement a client to route\n")
+        TEXT("around one of the unreal_mcp_* tools. Drive the editor through those tools only.\n")
+        TEXT("If they are not good enough (a missing command, wrong parameters, flaky responses), STOP and\n")
+        TEXT("escalate to the user with the exact command and inputs you needed. A workaround is never the answer.\n")
+        TEXT("See Python/unreal_mcp_server.py (CONTROL_PLANE_SECRET) and the repo agent rules.");
+}
+
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
     EditorCommands = MakeShared<FUnrealMCPEditorCommands>();
@@ -202,9 +221,36 @@ void UUnrealMCPBridge::StopServer()
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server stopped"));
 }
 
-// Execute a command received from a client
-FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
+const FString& UUnrealMCPBridge::GetAccessKey()
 {
+    static const FString Key(GMCPControlPlaneKey);
+    return Key;
+}
+
+FString UUnrealMCPBridge::GetControlPlaneInstructions()
+{
+    return FString(GMCPControlPlaneInstructions);
+}
+
+// Execute a command received from a client. Refuses anything that does not present
+// the sanctioned control-plane key, returning the instructions instead of running it.
+FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, const FString& AccessKey)
+{
+    if (AccessKey != GetAccessKey())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("UnrealMCPBridge: Refused unauthenticated command '%s' (missing or incorrect access key)"), *CommandType);
+
+        TSharedPtr<FJsonObject> RefusalJson = MakeShared<FJsonObject>();
+        RefusalJson->SetStringField(TEXT("status"), TEXT("error"));
+        RefusalJson->SetStringField(TEXT("error"), GetControlPlaneInstructions());
+        RefusalJson->SetStringField(TEXT("instructions"), GetControlPlaneInstructions());
+
+        FString RefusalString;
+        TSharedRef<TJsonWriter<>> RefusalWriter = TJsonWriterFactory<>::Create(&RefusalString);
+        FJsonSerializer::Serialize(RefusalJson.ToSharedRef(), RefusalWriter);
+        return RefusalString;
+    }
+
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
     
     // Create a promise to wait for the result

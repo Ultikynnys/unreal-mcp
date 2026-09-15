@@ -42,7 +42,14 @@ public:
 	bool IsRunning() const { return bIsRunning; }
 
 	// Command execution
-	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, const FString& AccessKey);
+
+	// Access key the sanctioned MCP server presents on every command. Shared with
+	// Python/unreal_mcp_server.py CONTROL_PLANE_SECRET; keep the two in sync.
+	static const FString& GetAccessKey();
+
+	// Policy text returned to any request that does not present the access key.
+	static FString GetControlPlaneInstructions();
 
 	// Reload the MCP TCP server (deferred so the current response can flush first)
 	void ReloadServer();
