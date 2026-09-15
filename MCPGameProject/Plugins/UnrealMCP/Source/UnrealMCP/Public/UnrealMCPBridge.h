@@ -44,6 +44,12 @@ public:
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, const FString& AccessKey);
 
+	// Full command router: dispatches one command to the matching handler
+	// (editor / blueprint / blueprint-node / project / umg). Used by ExecuteCommand
+	// and injected into the editor handler so batch_execute can reach the full
+	// command surface, not just editor commands.
+	TSharedPtr<FJsonObject> DispatchCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+
 	// Access key the sanctioned MCP server presents on every command. Shared with
 	// Python/unreal_mcp_server.py CONTROL_PLANE_SECRET; keep the two in sync.
 	static const FString& GetAccessKey();

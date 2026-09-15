@@ -105,7 +105,15 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
 void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Initializing"));
-    
+
+    // Give the editor handler a router back into the full command surface so that
+    // batch_execute sub-commands reach every handler (blueprint nodes included),
+    // not just EditorCommands' own table.
+    EditorCommands->SetSubCommandRouter([this](const FString& SubCommand, const TSharedPtr<FJsonObject>& SubParams)
+    {
+        return DispatchCommand(SubCommand, SubParams);
+    });
+
     bIsRunning = false;
     ListenerSocket = nullptr;
     ConnectionSocket = nullptr;
@@ -232,6 +240,120 @@ FString UUnrealMCPBridge::GetControlPlaneInstructions()
     return FString(GMCPControlPlaneInstructions);
 }
 
+// Full command router. Maps a single command name to the handler that owns it.
+// ExecuteCommand calls this for every top-level request, and the editor handler's
+// batch_execute calls it for each batched sub-command, so batches reach the entire
+// command surface (editor + blueprint + blueprint-node + project + umg), not just
+// editor commands.
+TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
+{
+    // ping / reload_server touch no UObjects and must stay reachable even while the
+    // editor is busy, so handle them before anything that does an object lookup.
+    if (CommandType == TEXT("ping"))
+    {
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetStringField(TEXT("message"), TEXT("pong"));
+        return Result;
+    }
+    if (CommandType == TEXT("reload_server"))
+    {
+        ReloadServer();
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("message"), TEXT("Reload acknowledged; listener kept bound (C++ bridge has no hot-reload)"));
+        return Result;
+    }
+
+    // Editor Commands (including actor manipulation, batch_execute and execute_python)
+    if (CommandType == TEXT("get_actors_in_level") ||
+        CommandType == TEXT("find_actors_by_name") ||
+        CommandType == TEXT("spawn_actor") ||
+        CommandType == TEXT("create_actor") ||
+        CommandType == TEXT("delete_actor") ||
+        CommandType == TEXT("set_actor_transform") ||
+        CommandType == TEXT("get_actor_properties") ||
+        CommandType == TEXT("set_actor_property") ||
+        CommandType == TEXT("spawn_blueprint_actor") ||
+        CommandType == TEXT("focus_viewport") ||
+        CommandType == TEXT("take_screenshot") ||
+        CommandType == TEXT("get_actor_details") ||
+        CommandType == TEXT("get_capabilities") ||
+        CommandType == TEXT("query_assets") ||
+        CommandType == TEXT("get_asset_details") ||
+        CommandType == TEXT("spawn_mesh_actor") ||
+        CommandType == TEXT("spawn_light_actor") ||
+        CommandType == TEXT("spawn_mesh_grid") ||
+        CommandType == TEXT("spawn_instanced_mesh") ||
+        CommandType == TEXT("set_actor_material") ||
+        CommandType == TEXT("set_actor_folder") ||
+        CommandType == TEXT("delete_actors_by_prefix") ||
+        CommandType == TEXT("create_level") ||
+        CommandType == TEXT("save_level") ||
+        CommandType == TEXT("load_level") ||
+        CommandType == TEXT("delete_level") ||
+        CommandType == TEXT("set_viewport_camera") ||
+        CommandType == TEXT("capture_viewport_screenshot") ||
+        CommandType == TEXT("capture_pie_screenshot") ||
+        CommandType == TEXT("batch_execute") ||
+        CommandType == TEXT("execute_python") ||
+        CommandType == TEXT("import_asset") ||
+        CommandType == TEXT("get_import_status"))
+    {
+        return EditorCommands->HandleCommand(CommandType, Params);
+    }
+    // Blueprint Commands
+    if (CommandType == TEXT("create_blueprint") ||
+        CommandType == TEXT("add_component_to_blueprint") ||
+        CommandType == TEXT("set_component_property") ||
+        CommandType == TEXT("set_physics_properties") ||
+        CommandType == TEXT("compile_blueprint") ||
+        CommandType == TEXT("set_blueprint_property") ||
+        CommandType == TEXT("set_static_mesh_properties") ||
+        CommandType == TEXT("set_pawn_properties"))
+    {
+        return BlueprintCommands->HandleCommand(CommandType, Params);
+    }
+    // Blueprint Node Commands
+    if (CommandType == TEXT("connect_blueprint_nodes") ||
+        CommandType == TEXT("add_blueprint_get_self_component_reference") ||
+        CommandType == TEXT("add_blueprint_self_reference") ||
+        CommandType == TEXT("find_blueprint_nodes") ||
+        CommandType == TEXT("add_blueprint_event_node") ||
+        CommandType == TEXT("add_blueprint_input_action_node") ||
+        CommandType == TEXT("add_blueprint_function_node") ||
+        CommandType == TEXT("add_blueprint_get_component_node") ||
+        CommandType == TEXT("add_blueprint_variable") ||
+        CommandType == TEXT("add_blueprint_node") ||
+        CommandType == TEXT("delete_blueprint_node") ||
+        CommandType == TEXT("clear_blueprint_graph") ||
+        CommandType == TEXT("disconnect_blueprint_pin") ||
+        CommandType == TEXT("get_blueprint_graphs") ||
+        CommandType == TEXT("validate_blueprint_graph") ||
+        CommandType == TEXT("set_blueprint_node_position") ||
+        CommandType == TEXT("add_blueprint_reroute_node") ||
+        CommandType == TEXT("set_blueprint_node_pin_default"))
+    {
+        return BlueprintNodeCommands->HandleCommand(CommandType, Params);
+    }
+    // Project Commands
+    if (CommandType == TEXT("create_input_mapping"))
+    {
+        return ProjectCommands->HandleCommand(CommandType, Params);
+    }
+    // UMG Commands
+    if (CommandType == TEXT("create_umg_widget_blueprint") ||
+        CommandType == TEXT("add_text_block_to_widget") ||
+        CommandType == TEXT("add_button_to_widget") ||
+        CommandType == TEXT("bind_widget_event") ||
+        CommandType == TEXT("set_text_block_binding") ||
+        CommandType == TEXT("add_widget_to_viewport"))
+    {
+        return UMGCommands->HandleCommand(CommandType, Params);
+    }
+
+    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown command: %s"), *CommandType));
+}
+
 // Execute a command received from a client. Refuses anything that does not present
 // the sanctioned control-plane key, returning the instructions instead of running it.
 FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, const FString& AccessKey)
@@ -286,120 +408,10 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 }
             }
 
-            if (CommandType == TEXT("ping"))
-            {
-                ResultJson = MakeShareable(new FJsonObject);
-                ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
-            }
-            // Editor Commands (including actor manipulation)
-            else if (CommandType == TEXT("get_actors_in_level") || 
-                     CommandType == TEXT("find_actors_by_name") ||
-                     CommandType == TEXT("spawn_actor") ||
-                     CommandType == TEXT("create_actor") ||
-                     CommandType == TEXT("delete_actor") || 
-                     CommandType == TEXT("set_actor_transform") ||
-                     CommandType == TEXT("get_actor_properties") ||
-                     CommandType == TEXT("set_actor_property") ||
-                     CommandType == TEXT("spawn_blueprint_actor") ||
-                     CommandType == TEXT("focus_viewport") || 
-                     CommandType == TEXT("take_screenshot") ||
-                     CommandType == TEXT("get_actor_details") ||
-                     CommandType == TEXT("get_capabilities") ||
-                     CommandType == TEXT("query_assets") ||
-                     CommandType == TEXT("get_asset_details") ||
-                     CommandType == TEXT("spawn_mesh_actor") ||
-                     CommandType == TEXT("spawn_light_actor") ||
-                     CommandType == TEXT("spawn_mesh_grid") ||
-                     CommandType == TEXT("spawn_instanced_mesh") ||
-                     CommandType == TEXT("set_actor_material") ||
-                     CommandType == TEXT("set_actor_folder") ||
-                     CommandType == TEXT("delete_actors_by_prefix") ||
-                     CommandType == TEXT("create_level") ||
-                     CommandType == TEXT("save_level") ||
-                     CommandType == TEXT("load_level") ||
-                     CommandType == TEXT("delete_level") ||
-                     CommandType == TEXT("set_viewport_camera") ||
-                     CommandType == TEXT("capture_viewport_screenshot") ||
-                     CommandType == TEXT("capture_pie_screenshot") ||
-                     CommandType == TEXT("batch_execute") ||
-                     CommandType == TEXT("execute_python") ||
-                     CommandType == TEXT("import_asset") ||
-                     CommandType == TEXT("get_import_status") ||
-                     CommandType == TEXT("reload_server"))
-            {
-                if (CommandType == TEXT("reload_server"))
-                {
-                    ReloadServer();
-                    ResultJson = MakeShareable(new FJsonObject);
-                    ResultJson->SetBoolField(TEXT("success"), true);
-                    ResultJson->SetStringField(TEXT("message"), TEXT("Reload acknowledged; listener kept bound (C++ bridge has no hot-reload)"));
-                }
-                else
-                {
-                    ResultJson = EditorCommands->HandleCommand(CommandType, Params);
-                }
-            }
-            // Blueprint Commands
-            else if (CommandType == TEXT("create_blueprint") || 
-                     CommandType == TEXT("add_component_to_blueprint") || 
-                     CommandType == TEXT("set_component_property") || 
-                     CommandType == TEXT("set_physics_properties") || 
-                     CommandType == TEXT("compile_blueprint") || 
-                     CommandType == TEXT("set_blueprint_property") || 
-                     CommandType == TEXT("set_static_mesh_properties") ||
-                     CommandType == TEXT("set_pawn_properties"))
-            {
-                ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
-            }
-            // Blueprint Node Commands
-            else if (CommandType == TEXT("connect_blueprint_nodes") || 
-                     CommandType == TEXT("add_blueprint_get_self_component_reference") ||
-                     CommandType == TEXT("add_blueprint_self_reference") ||
-                     CommandType == TEXT("find_blueprint_nodes") ||
-                     CommandType == TEXT("add_blueprint_event_node") ||
-                     CommandType == TEXT("add_blueprint_input_action_node") ||
-                     CommandType == TEXT("add_blueprint_function_node") ||
-                     CommandType == TEXT("add_blueprint_get_component_node") ||
-                     CommandType == TEXT("add_blueprint_variable") ||
-                     CommandType == TEXT("add_blueprint_node") ||
-                     CommandType == TEXT("delete_blueprint_node") ||
-                     CommandType == TEXT("clear_blueprint_graph") ||
-                     CommandType == TEXT("disconnect_blueprint_pin") ||
-                     CommandType == TEXT("get_blueprint_graphs") ||
-                     CommandType == TEXT("validate_blueprint_graph") ||
-                     CommandType == TEXT("set_blueprint_node_position") ||
-                     CommandType == TEXT("add_blueprint_reroute_node") ||
-                     CommandType == TEXT("set_blueprint_node_pin_default"))
-            {
-                ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
-            }
-            // Project Commands
-            else if (CommandType == TEXT("create_input_mapping"))
-            {
-                ResultJson = ProjectCommands->HandleCommand(CommandType, Params);
-            }
-            // UMG Commands
-            else if (CommandType == TEXT("create_umg_widget_blueprint") ||
-                     CommandType == TEXT("add_text_block_to_widget") ||
-                     CommandType == TEXT("add_button_to_widget") ||
-                     CommandType == TEXT("bind_widget_event") ||
-                     CommandType == TEXT("set_text_block_binding") ||
-                     CommandType == TEXT("add_widget_to_viewport"))
-            {
-                ResultJson = UMGCommands->HandleCommand(CommandType, Params);
-            }
-            else
-            {
-                ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
-                ResponseJson->SetStringField(TEXT("error"), FString::Printf(TEXT("Unknown command: %s"), *CommandType));
-                
-                FString ResultString;
-                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
-                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-                Promise.SetValue(ResultString);
-                return;
-            }
+
             
+            ResultJson = DispatchCommand(CommandType, Params);
+
             // Check if the result contains an error
             bool bSuccess = true;
             FString ErrorMessage;

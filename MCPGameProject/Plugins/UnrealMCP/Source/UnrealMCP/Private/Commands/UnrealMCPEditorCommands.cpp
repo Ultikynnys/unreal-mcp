@@ -1119,7 +1119,12 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBatchExecute(const TShar
             SubParams = *ParamsObj;
         }
 
-        TSharedPtr<FJsonObject> SubResult = HandleCommand(SubCommand, SubParams);
+        // Route through the bridge-injected full-command router when present so a
+        // batch can drive blueprint-node / umg / project commands too; otherwise
+        // fall back to this handler's own (editor-only) command table.
+        TSharedPtr<FJsonObject> SubResult = SubCommandRouter
+            ? SubCommandRouter(SubCommand, SubParams)
+            : HandleCommand(SubCommand, SubParams);
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
         Entry->SetStringField(TEXT("command"), SubCommand);
         if (SubResult.IsValid())
