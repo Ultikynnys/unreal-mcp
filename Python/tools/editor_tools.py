@@ -516,20 +516,21 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def capture_viewport_screenshot(
         ctx: Context,
-        filename: str = "MCP_Screenshot.png",
-        width: int = 1440,
-        height: int = 1000
+        filename: str = "MCP_Screenshot.png"
     ) -> Dict[str, Any]:
-        """Trigger an automation high-resolution screenshot and return the filesystem destination path."""
+        """Capture the active editor viewport at its current resolution and return the saved path.
+
+        The image matches the live viewport size (the backend reads the viewport framebuffer),
+        so there is no width/height to set. Use capture_pie_screenshot's width/height to size a
+        PIE render.
+        """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             params = {
-                "filename": filename,
-                "width": width,
-                "height": height
+                "filename": filename
             }
             return unreal.send_command("capture_viewport_screenshot", params)
         except Exception as e:
@@ -821,7 +822,6 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         sources: List[str],
         destination_path: str = "/Game",
-        kind: str = "auto",
         replace_existing: bool = True,
         options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -845,7 +845,6 @@ def register_editor_tools(mcp: FastMCP):
             params = {
                 "sources": sources,
                 "destination_path": destination_path,
-                "kind": kind,
                 "replace_existing": replace_existing,
                 "options": options or {}
             }

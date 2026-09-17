@@ -38,35 +38,35 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCreateInputMapping(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get input settings"));
     }
 
-    // Create the input action mapping
-    FInputActionKeyMapping ActionMapping;
-    ActionMapping.ActionName = FName(*ActionName);
-    ActionMapping.Key = FKey(*Key);
+    // input_type selects an Action mapping (default) or an Axis mapping.
+    FString InputType = TEXT("Action");
+    Params->TryGetStringField(TEXT("input_type"), InputType);
 
-    // Add modifiers if provided
-    if (Params->HasField(TEXT("shift")))
+    if (InputType.Equals(TEXT("Axis"), ESearchCase::IgnoreCase))
     {
-        ActionMapping.bShift = Params->GetBoolField(TEXT("shift"));
+        FInputAxisKeyMapping AxisMapping;
+        AxisMapping.AxisName = FName(*ActionName);
+        AxisMapping.Key = FKey(*Key);
+        AxisMapping.Scale = 1.0f;
+        if (Params->HasField(TEXT("scale"))) { AxisMapping.Scale = (float)Params->GetNumberField(TEXT("scale")); }
+        InputSettings->AddAxisMapping(AxisMapping);
     }
-    if (Params->HasField(TEXT("ctrl")))
+    else
     {
-        ActionMapping.bCtrl = Params->GetBoolField(TEXT("ctrl"));
+        FInputActionKeyMapping ActionMapping;
+        ActionMapping.ActionName = FName(*ActionName);
+        ActionMapping.Key = FKey(*Key);
+        if (Params->HasField(TEXT("shift"))) { ActionMapping.bShift = Params->GetBoolField(TEXT("shift")); }
+        if (Params->HasField(TEXT("ctrl"))) { ActionMapping.bCtrl = Params->GetBoolField(TEXT("ctrl")); }
+        if (Params->HasField(TEXT("alt"))) { ActionMapping.bAlt = Params->GetBoolField(TEXT("alt")); }
+        if (Params->HasField(TEXT("cmd"))) { ActionMapping.bCmd = Params->GetBoolField(TEXT("cmd")); }
+        InputSettings->AddActionMapping(ActionMapping);
     }
-    if (Params->HasField(TEXT("alt")))
-    {
-        ActionMapping.bAlt = Params->GetBoolField(TEXT("alt"));
-    }
-    if (Params->HasField(TEXT("cmd")))
-    {
-        ActionMapping.bCmd = Params->GetBoolField(TEXT("cmd"));
-    }
-
-    // Add the mapping
-    InputSettings->AddActionMapping(ActionMapping);
     InputSettings->SaveConfig();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("action_name"), ActionName);
     ResultObj->SetStringField(TEXT("key"), Key);
+    ResultObj->SetStringField(TEXT("input_type"), InputType.Equals(TEXT("Axis"), ESearchCase::IgnoreCase) ? TEXT("Axis") : TEXT("Action"));
     return ResultObj;
 } 

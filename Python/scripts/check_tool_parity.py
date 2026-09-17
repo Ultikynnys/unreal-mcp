@@ -97,13 +97,8 @@ PY_SEND_RE = re.compile(r'send_command\(\s*["\']([a-z0-9_]+)["\']\s*,\s*')
 # backend). Listing them keeps CI green so only NEW drift fails; the checker still prints
 # them under INFO so they stay visible. Remove an entry the moment the param is wired up.
 PARAM_ALLOWLIST: dict[str, set[str]] = {
-    "get_actors_in_level": {"class_filter", "search", "limit", "offset"},  # handler returns ALL actors
-    "capture_viewport_screenshot": {"width", "height"},                     # handler uses a fixed size
-    "create_input_mapping": {"input_type"},                                 # only action+key are read
-    "save_level": {"overwrite"},                                            # save-as ignores overwrite
-    "spawn_light_actor": {"mobility"},                                      # mobility is hard-coded
-    "spawn_mesh_actor": {"allow_duplicate"},                                # only spawn_actor honors it
-    "import_asset": {"kind"},                                               # import auto-detects the kind
+    # Empty: every advertised parameter is now read by its C++ handler. Add an entry (with
+    # a reason) only for a genuine, accepted gap so new drift still fails CI.
 }
 
 

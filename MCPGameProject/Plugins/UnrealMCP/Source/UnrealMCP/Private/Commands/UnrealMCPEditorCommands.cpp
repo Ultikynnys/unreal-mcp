@@ -545,9 +545,30 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnMeshActor(const TSh
     if (Params->HasField(TEXT("rotation"))) { Rotation = FUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation")); }
     if (Params->HasField(TEXT("scale"))) { Scale = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale")); }
 
+    // Honor allow_duplicate: on a name clash, fail unless the caller permits a derived
+    // free name (mirrors HandleSpawnActor).
+    bool bAllowDuplicate = false;
+    Params->TryGetBoolField(TEXT("allow_duplicate"), bAllowDuplicate);
+    if (!ActorName.IsEmpty())
+    {
+        TArray<AActor*> ExistingActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), ExistingActors);
+        TSet<FString> ExistingNames;
+        for (AActor* Existing : ExistingActors) { if (Existing) { ExistingNames.Add(Existing->GetName()); } }
+        if (ExistingNames.Contains(ActorName))
+        {
+            if (!bAllowDuplicate)
+            {
+                return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor with name '%s' already exists (set allow_duplicate=true)"), *ActorName));
+            }
+            const FString BaseName = ActorName;
+            int32 Suffix = 1;
+            while (ExistingNames.Contains(ActorName)) { ActorName = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++); }
+        }
+    }
+
     FActorSpawnParameters SpawnParams;
-    // A duplicate name must auto-rename, NOT fatal: FActorSpawnParameters defaults NameMode to
-    // Required_Fatal, which crashes the editor when the supplied name is already in use.
+    // NameMode Requested so any residual race still auto-renames instead of fatal.
     SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
     if (!ActorName.IsEmpty()) { SpawnParams.Name = *ActorName; }
     AStaticMeshActor* NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
@@ -624,7 +645,12 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnLightActor(const TS
 
     if (ULightComponent* LC = NewLight->GetLightComponent())
     {
-        LC->SetMobility(EComponentMobility::Movable);
+        FString Mobility = TEXT("movable");
+        Params->TryGetStringField(TEXT("mobility"), Mobility);
+        EComponentMobility::Type MobilityType = EComponentMobility::Movable;
+        if (Mobility.Equals(TEXT("static"), ESearchCase::IgnoreCase)) { MobilityType = EComponentMobility::Static; }
+        else if (Mobility.Equals(TEXT("stationary"), ESearchCase::IgnoreCase)) { MobilityType = EComponentMobility::Stationary; }
+        LC->SetMobility(MobilityType);
         if (Params->HasField(TEXT("intensity"))) { LC->SetIntensity((float)Params->GetNumberField(TEXT("intensity"))); }
         if (Params->HasField(TEXT("color"))) { LC->SetLightColor(GetLinearColorFromJson(Params, TEXT("color"))); }
         if (Params->HasField(TEXT("attenuation_radius")))
@@ -932,9 +958,16 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveLevel(const TSharedP
     FString DestinationPath;
     const bool bHasDestination = Params->TryGetStringField(TEXT("destination_path"), DestinationPath) && !DestinationPath.IsEmpty();
 
+    bool bOverwrite = false;
+    Params->TryGetBoolField(TEXT("overwrite"), bOverwrite);
+
     bool bSaved = false;
     if (bHasDestination)
     {
+        if (!bOverwrite && UEditorAssetLibrary::DoesAssetExist(DestinationPath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Level already exists: %s (set overwrite=true)"), *DestinationPath));
+        }
         UWorld* World = GEditor->GetEditorWorldContext().World();
         bSaved = World ? UEditorLoadingAndSavingUtils::SaveMap(World, DestinationPath) : false;
     }
@@ -1957,21 +1990,32 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetPlanStatus(const TSha
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
+    FString ClassFilter;
+    Params->TryGetStringField(TEXT("class_filter"), ClassFilter);
+    FString Search;
+    Params->TryGetStringField(TEXT("search"), Search);
+    int32 Limit = 200;
+    if (Params->HasField(TEXT("limit"))) { Limit = (int32)Params->GetNumberField(TEXT("limit")); }
+    int32 Offset = 0;
+    if (Params->HasField(TEXT("offset"))) { Offset = (int32)Params->GetNumberField(TEXT("offset")); }
+
     TArray<AActor*> AllActors;
     UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
-    
+
     TArray<TSharedPtr<FJsonValue>> ActorArray;
+    int32 Skipped = 0;
     for (AActor* Actor : AllActors)
     {
-        if (Actor)
-        {
-            ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
-        }
+        if (!Actor) { continue; }
+        if (!ClassFilter.IsEmpty() && !Actor->GetClass()->GetName().Contains(ClassFilter)) { continue; }
+        if (!Search.IsEmpty() && !Actor->GetName().Contains(Search) && !Actor->GetActorLabel().Contains(Search)) { continue; }
+        if (Skipped < Offset) { Skipped++; continue; }
+        if (ActorArray.Num() >= Limit) { break; }
+        ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
     }
-    
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), ActorArray);
-    
     return ResultObj;
 }
 
