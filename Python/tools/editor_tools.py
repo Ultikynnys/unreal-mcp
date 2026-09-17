@@ -44,31 +44,41 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def find_actors_by_name(ctx: Context, pattern: str) -> List[Dict[str, Any]]:
-        """Find actors by name pattern."""
+    def find_actors_by_name(ctx: Context, pattern: str) -> Dict[str, Any]:
+        """Find actors by name pattern.
+
+        Returns {"success", "actors", "count"} on success, or {"success": False,
+        "message"} on failure, so a bridge error is never indistinguishable from an
+        empty match set.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
             unreal = get_unreal_connection()
             if not unreal:
-                logger.warning("Failed to connect to Unreal Engine")
-                return []
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
                 
             response = unreal.send_command("find_actors_by_name", {
                 "pattern": pattern
             })
             
             if not response:
-                return []
-                
+                logger.error("find_actors_by_name: no response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+            
+            if response.get("success") is False:
+                return {"success": False, "message": response.get("message", "Unknown error")}
+            
             # Backend replies are normalized to {"success", "result", "message"};
             # the actor array lives under result.actors, not at the top level.
             result = response.get("result") or {}
-            return result.get("actors", [])
+            actors = result.get("actors", [])
+            return {"success": True, "actors": actors, "count": len(actors)}
             
         except Exception as e:
             logger.error(f"Error finding actors: {e}")
-            return []
+            return {"success": False, "message": str(e)}
     
     @mcp.tool()
     def spawn_actor(
@@ -99,10 +109,10 @@ def register_editor_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
-            # Ensure all parameters are properly formatted
+            # Send the type verbatim; the C++ handler matches it case-insensitively.
             params = {
                 "name": name,
-                "type": type.upper(),  # Make sure type is uppercase
+                "type": type,
                 "location": location,
                 "rotation": rotation,
                 "allow_duplicate": allow_duplicate
@@ -154,11 +164,11 @@ def register_editor_tools(mcp: FastMCP):
             response = unreal.send_command("delete_actor", {
                 "name": name
             })
-            return response or {}
+            return response or {"success": False, "message": "No response from Unreal Engine"}
             
         except Exception as e:
             logger.error(f"Error deleting actor: {e}")
-            return {}
+            return {"success": False, "message": str(e)}
     
     @mcp.tool()
     def set_actor_transform(
@@ -186,11 +196,11 @@ def register_editor_tools(mcp: FastMCP):
                 params["scale"] = scale
                 
             response = unreal.send_command("set_actor_transform", params)
-            return response or {}
+            return response or {"success": False, "message": "No response from Unreal Engine"}
             
         except Exception as e:
             logger.error(f"Error setting transform: {e}")
-            return {}
+            return {"success": False, "message": str(e)}
     
     @mcp.tool()
     def get_actor_properties(ctx: Context, name: str) -> Dict[str, Any]:
@@ -458,7 +468,15 @@ def register_editor_tools(mcp: FastMCP):
         description: str = "MCP Batch Operation",
         rollback_on_failure: bool = True
     ) -> Dict[str, Any]:
-        """Execute a list of atomic operations inside a single ScopedEditorTransaction with rollback."""
+        """Execute a list of operations in one batch.
+
+        Each sub-command is routed through the full command surface (editor, blueprint,
+        blueprint-node, project, UMG). When rollback_on_failure is set and any action
+        fails, the whole batch is reverted: every actor and component is snapshotted
+        before the batch and restored after (the editor undo stack does not revert
+        changes made over the socket bridge), and actors spawned during the batch are
+        destroyed. Returns { results, count, failures, rolled_back }.
+        """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
@@ -848,6 +866,24 @@ def register_editor_tools(mcp: FastMCP):
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             return unreal.send_command("get_import_status", {"job_id": job_id})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def recover_editor(ctx: Context) -> Dict[str, Any]:
+        """Recover an editor stalled by the "restore unsaved files" crash-recovery prompt.
+
+        After an abnormal shutdown Unreal writes Saved/Autosaves/PackageRestoreData.json and
+        on the next launch shows a modal "restore unsaved files" dialog that blocks the core
+        ticker (so plan / layout jobs never run). This clears that on-disk state and dismisses
+        the modal so the editor resumes. Call it right after the bridge connects.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("recover_editor", {})
         except Exception as e:
             return {"success": False, "message": str(e)}
 

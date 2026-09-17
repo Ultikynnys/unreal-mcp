@@ -34,7 +34,7 @@ Find actors in the current level by name pattern.
 - `pattern` (string) - The name or partial name pattern to search for
 
 **Returns:**
-- List of matching actor names
+- `{"success": true, "actors": [...], "count": N}` on success, or `{"success": false, "message": "..."}` on failure
 
 **Example:**
 ```json

@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPEditorCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "JsonObjectConverter.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorViewport.h"
@@ -7,6 +8,10 @@
 #include "HighResScreenshot.h"
 #include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
+#include "Misc/Paths.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/SWindow.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
@@ -16,6 +21,7 @@
 #include "Engine/SpotLight.h"
 #include "Camera/CameraActor.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
@@ -114,6 +120,17 @@ namespace
 
         bool bClear = false;
         bool bCleared = false;
+
+        // Auto-layout: node positions come from NodePositions (computed from topology)
+        // instead of each op's own "pos", and multi-column edges route through knot
+        // chains (EdgeKnots) instead of one long wire.
+        bool bAutoLayout = false;
+        float ColGap = 36.0f;
+        float RowGap = 48.0f;
+        FVector2D Origin = FVector2D::ZeroVector;
+        bool bPlaced = false;
+        TArray<FVector2D> NodePositions;            // per NodeOps index (final, after measuring)
+        TArray<TArray<FVector2D>> EdgeKnots;        // per EdgeOps index: intermediate knot positions
     };
 
     TMap<FString, TSharedPtr<FBlueprintPlanJobState>> GPlanJobs;
@@ -326,8 +343,47 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("get_import_status")) { return HandleGetImportStatus(Params); }
     else if (CommandType == TEXT("apply_blueprint_plan")) { return HandleApplyBlueprintPlan(Params); }
     else if (CommandType == TEXT("get_plan_status")) { return HandleGetPlanStatus(Params); }
+    else if (CommandType == TEXT("recover_editor")) { return HandleRecoverEditor(Params); }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
+}
+
+// Recover from the "restore unsaved files" crash-recovery prompt that stalls startup after
+// an abnormal shutdown. That prompt is driven by Saved/Autosaves/PackageRestoreData.json, so
+// we (1) delete the recovery state so it cannot recur, then (2) dismiss the now-stale
+// recovery modal so the core ticker resumes. Runs on the game thread via the bridge's
+// AsyncTask, which still dispatches while a modal is up.
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRecoverEditor(const TSharedPtr<FJsonObject>& Params)
+{
+    int32 FilesRemoved = 0;
+    const FString AutoDir = FPaths::ProjectSavedDir() / TEXT("Autosaves");
+    IFileManager& FM = IFileManager::Get();
+
+    const FString RestoreData = AutoDir / TEXT("PackageRestoreData.json");
+    if (FM.FileExists(*RestoreData))
+    {
+        FM.Delete(*RestoreData, /*RequireExists*/ false, /*EvenReadOnly*/ true, /*Quiet*/ true);
+        ++FilesRemoved;
+    }
+
+    // Dismiss every active modal window (the recovery dialog). There is usually one.
+    int32 ModalsDismissed = 0;
+    if (FSlateApplication::IsInitialized())
+    {
+        for (int32 Guard = 0; Guard < 16; ++Guard)
+        {
+            TSharedPtr<SWindow> Modal = FSlateApplication::Get().GetActiveModalWindow();
+            if (!Modal.IsValid()) { break; }
+            Modal->RequestDestroyWindow();
+            ++ModalsDismissed;
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetNumberField(TEXT("restore_data_removed"), FilesRemoved);
+    ResultObj->SetNumberField(TEXT("modals_dismissed"), ModalsDismissed);
+    return ResultObj;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
@@ -352,7 +408,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("apply_blueprint_plan"), TEXT("get_plan_status"),
         TEXT("delete_blueprint_node"), TEXT("clear_blueprint_graph"),
         TEXT("disconnect_blueprint_pin"), TEXT("get_blueprint_graphs"),
-        TEXT("set_blueprint_node_pin_default")
+        TEXT("set_blueprint_node_pin_default"),
+        TEXT("get_blueprint_node_bounds"),
+        TEXT("auto_layout_blueprint_graph"),
+        TEXT("recover_editor")
     };
     TArray<TSharedPtr<FJsonValue>> CommandArray;
     for (const TCHAR* Cmd : SupportedCommands)
@@ -737,13 +796,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMaterial(const T
     int32 SlotIndex = 0;
     if (Params->HasField(TEXT("slot_index"))) { SlotIndex = (int32)Params->GetNumberField(TEXT("slot_index")); }
 
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName) { TargetActor = Actor; break; }
-    }
+    AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(ActorName);
     if (!TargetActor)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -781,13 +834,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorFolder(const TSh
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'folder_path' parameter"));
     }
 
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName) { TargetActor = Actor; break; }
-    }
+    AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(ActorName);
     if (!TargetActor)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -809,7 +856,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActorsByPrefix(con
     }
 
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
 
     TArray<AActor*> ToDelete;
     for (AActor* Actor : AllActors)
@@ -943,9 +990,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteLevel(const TShare
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Level not found: %s"), *MapPath));
     }
 
+    // Normalise the requested path to a package name and compare exactly. The old
+    // substring test falsely matched sibling levels (e.g. ".../Main" vs ".../Main2").
+    FString MapPackage = MapPath;
+    int32 DotIndex = INDEX_NONE;
+    if (MapPackage.FindChar(TEXT('.'), DotIndex)) { MapPackage = MapPackage.Left(DotIndex); }
     UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
     const FString CurrentPackage = World ? World->GetOutermost()->GetName() : FString();
-    if (!bForce && !CurrentPackage.IsEmpty() && MapPath.Contains(CurrentPackage))
+    if (!bForce && !CurrentPackage.IsEmpty() && MapPackage.Equals(CurrentPackage, ESearchCase::IgnoreCase))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Refusing to delete the currently open level (set force=true)"));
     }
@@ -1140,6 +1192,59 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBatchExecute(const TShar
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actions' array parameter"));
     }
 
+    FString Description = TEXT("MCP Batch Operation");
+    Params->TryGetStringField(TEXT("description"), Description);
+    bool bRollbackOnFailure = true;
+    Params->TryGetBoolField(TEXT("rollback_on_failure"), bRollbackOnFailure);
+
+    // Deterministic rollback. The editor undo stack does NOT revert changes applied over
+    // the socket bridge (verified), so instead of relying on CancelTransaction we snapshot
+    // every actor and component up front and restore the snapshot if we have to roll back.
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    TSet<AActor*> ActorsBefore;
+    TArray<AActor*> ActorRefs;
+    TArray<TSharedPtr<FJsonObject>> ActorSnapshots;
+    TArray<UActorComponent*> ComponentRefs;
+    TArray<TSharedPtr<FJsonObject>> ComponentSnapshots;
+    // Snapshot only when a rollback is actually possible AND there is work to do (an
+    // empty batch can neither fail nor change anything). Callers that do not need
+    // rollback should pass rollback_on_failure=false to skip the whole-level snapshot.
+    if (bRollbackOnFailure && World && Actions->Num() > 0)
+    {
+        TArray<AActor*> ExistingActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), ExistingActors);
+        for (AActor* Actor : ExistingActors)
+        {
+            if (!Actor) { continue; }
+            ActorsBefore.Add(Actor);
+
+            TSharedRef<FJsonObject> ActorSnapshot = MakeShared<FJsonObject>();
+            if (FJsonObjectConverter::UStructToJsonObject(Actor->GetClass(), Actor, ActorSnapshot, 0, 0))
+            {
+                ActorRefs.Add(Actor);
+                ActorSnapshots.Add(ActorSnapshot);
+            }
+            for (UActorComponent* Component : Actor->GetComponents())
+            {
+                if (!Component) { continue; }
+                TSharedRef<FJsonObject> ComponentSnapshot = MakeShared<FJsonObject>();
+                if (FJsonObjectConverter::UStructToJsonObject(Component->GetClass(), Component, ComponentSnapshot, 0, 0))
+                {
+                    ComponentRefs.Add(Component);
+                    ComponentSnapshots.Add(ComponentSnapshot);
+                }
+            }
+        }
+    }
+
+    // A transaction is still opened so that handlers which record undo (e.g. blueprint
+    // graph ops) participate; it is not relied on for the rollback below.
+    int32 TransactionIndex = INDEX_NONE;
+    if (GEditor)
+    {
+        TransactionIndex = GEditor->BeginTransaction(FText::FromString(Description));
+    }
+
     TArray<TSharedPtr<FJsonValue>> Results;
     int32 Failures = 0;
     for (const TSharedPtr<FJsonValue>& ActionValue : *Actions)
@@ -1177,10 +1282,55 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBatchExecute(const TShar
         Results.Add(MakeShared<FJsonValueObject>(Entry));
     }
 
+    // Close out the batch: on a requested rollback, restore every actor/component snapshot
+    // taken before the batch and destroy any actor the batch spawned; otherwise commit.
+    const bool bRolledBack = (bRollbackOnFailure && Failures > 0);
+    if (bRolledBack)
+    {
+        for (int32 i = 0; i < ActorRefs.Num(); ++i)
+        {
+            if (AActor* Actor = ActorRefs[i])
+            {
+                FJsonObjectConverter::JsonObjectToUStruct(ActorSnapshots[i].ToSharedRef(), Actor->GetClass(), Actor, 0, 0);
+            }
+        }
+        for (int32 i = 0; i < ComponentRefs.Num(); ++i)
+        {
+            if (UActorComponent* Component = ComponentRefs[i])
+            {
+                FJsonObjectConverter::JsonObjectToUStruct(ComponentSnapshots[i].ToSharedRef(), Component->GetClass(), Component, 0, 0);
+                // Restoring properties does not recompute the cached transform; without this
+                // the relative location reverts but the actor still reports its moved position.
+                if (USceneComponent* SceneComponent = Cast<USceneComponent>(Component))
+                {
+                    SceneComponent->UpdateComponentToWorld();
+                }
+            }
+        }
+        if (World)
+        {
+            TArray<AActor*> CurrentActors;
+            UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), CurrentActors);
+            for (AActor* Actor : CurrentActors)
+            {
+                if (Actor && !ActorsBefore.Contains(Actor))
+                {
+                    Actor->Destroy();
+                }
+            }
+        }
+        if (TransactionIndex != INDEX_NONE && GEditor) { GEditor->CancelTransaction(TransactionIndex); }
+    }
+    else if (TransactionIndex != INDEX_NONE && GEditor)
+    {
+        GEditor->EndTransaction();
+    }
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("results"), Results);
     ResultObj->SetNumberField(TEXT("count"), Results.Num());
     ResultObj->SetNumberField(TEXT("failures"), Failures);
+    ResultObj->SetBoolField(TEXT("rolled_back"), bRolledBack);
     return ResultObj;
 }
 
@@ -1392,6 +1542,48 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleApplyBlueprintPlan(const
     CollectOps(Plan, TEXT("defaults"), Job->DefaultOps);
     Job->Total = Job->NodeOps.Num() + Job->EdgeOps.Num() + Job->DefaultOps.Num();
 
+    bool bAutoLayoutParam = false;
+    Params->TryGetBoolField(TEXT("auto_layout"), bAutoLayoutParam);
+    if (bAutoLayoutParam && Job->NodeOps.Num() > 0)
+    {
+        // Defer placement to the placing phase: the nodes are created first, then their REAL
+        // sizes are measured and the layout runs over those. Estimating sizes before creation
+        // (the old flat 220x100) undercounted tall nodes -- e.g. Print String ~270 -- and
+        // produced colliding slots. Only the origin and gaps are resolved here.
+        float ColGap = 36.0f;
+        if (Params->HasField(TEXT("col_gap"))) { ColGap = (float)Params->GetNumberField(TEXT("col_gap")); }
+        float RowGap = 48.0f;
+        if (Params->HasField(TEXT("row_gap"))) { RowGap = (float)Params->GetNumberField(TEXT("row_gap")); }
+        float OriginX = 0.0f;
+        float OriginY = 0.0f;
+        if (Params->HasField(TEXT("origin_x"))) { OriginX = (float)Params->GetNumberField(TEXT("origin_x")); }
+        if (Params->HasField(TEXT("origin_y"))) { OriginY = (float)Params->GetNumberField(TEXT("origin_y")); }
+
+        // If the graph already has nodes (e.g. the template BeginPlay, or a function entry)
+        // and we are not clearing it, start the layout below them so column 0 cannot collide.
+        if (!Job->bClear)
+        {
+            UBlueprint* ExistingBP = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+            UEdGraph* ExistingGraph = ExistingBP ? FUnrealMCPCommonUtils::FindGraphByName(ExistingBP, GraphName) : nullptr;
+            if (ExistingGraph)
+            {
+                FVector2D EMin, EMax;
+                int32 ECount = 0;
+                FUnrealMCPCommonUtils::ComputeGraphBounds(ExistingGraph, EMin, EMax, ECount, true);
+                if (ECount > 0)
+                {
+                    if (!Params->HasField(TEXT("origin_x"))) { OriginX = EMin.X; }
+                    if (!Params->HasField(TEXT("origin_y"))) { OriginY = EMax.Y + 400.0f; }
+                }
+            }
+        }
+
+        Job->bAutoLayout = true;
+        Job->ColGap = ColGap;
+        Job->RowGap = RowGap;
+        Job->Origin = FVector2D(OriginX, OriginY);
+    }
+
     const FString JobId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
     {
         FScopeLock Lock(&GPlanJobsMutex);
@@ -1507,8 +1699,24 @@ bool FUnrealMCPEditorCommands::RunBlueprintPlanChunk(const FString& JobId, int32
         P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
         P->SetStringField(TEXT("graph_name"), Job->GraphName);
 
+        // Effective position: under auto-layout, create the node at a scratch slot clear of
+        // existing nodes; the placing phase moves it to its real spot once sizes are known.
+        // Otherwise use the op's own "pos".
         const TArray<TSharedPtr<FJsonValue>>* PosArr = nullptr;
-        const bool bHasPos = Op->TryGetArrayField(TEXT("pos"), PosArr) && PosArr;
+        bool bHasPos = false;
+        if (Job->bAutoLayout)
+        {
+            const FVector2D Scratch(Job->Origin.X + 1500.0f * (float)Job->NodeCursor, Job->Origin.Y + 6000.0f);
+            TArray<TSharedPtr<FJsonValue>> AutoPosArr;
+            AutoPosArr.Add(MakeShared<FJsonValueNumber>(Scratch.X));
+            AutoPosArr.Add(MakeShared<FJsonValueNumber>(Scratch.Y));
+            P->SetArrayField(TEXT("node_position"), AutoPosArr);
+            P->SetArrayField(TEXT("position"), AutoPosArr);
+        }
+        else if (Op->TryGetArrayField(TEXT("pos"), PosArr) && PosArr)
+        {
+            bHasPos = true;
+        }
 
         FString Command;
         if (OpKind == TEXT("function"))
@@ -1566,6 +1774,67 @@ bool FUnrealMCPEditorCommands::RunBlueprintPlanChunk(const FString& JobId, int32
     }
     if (Job->NodeCursor < Job->NodeOps.Num()) { return true; }
 
+    // 1.5) Place: every node now exists and reports its real size, so run the layered layout
+    // over MEASURED sizes and move the nodes into it.
+    if (Job->bAutoLayout && !Job->bPlaced)
+    {
+        Job->Phase = TEXT("placing");
+        UBlueprint* PlaceBP = FUnrealMCPCommonUtils::FindBlueprint(Job->BlueprintName);
+        UEdGraph* PlaceGraph = PlaceBP ? FUnrealMCPCommonUtils::FindGraphByName(PlaceBP, Job->GraphName) : nullptr;
+        if (PlaceGraph)
+        {
+            TMap<FString, int32> RefIndex;
+            for (int32 i = 0; i < Job->NodeOps.Num(); ++i)
+            {
+                FString Ref; Job->NodeOps[i]->TryGetStringField(TEXT("ref"), Ref);
+                if (!Ref.IsEmpty()) { RefIndex.Add(Ref, i); }
+            }
+
+            FUnrealMCPCommonUtils::FLayoutInput In;
+            In.NodeCount = Job->NodeOps.Num();
+            In.Sizes.SetNum(In.NodeCount);
+            for (int32 i = 0; i < In.NodeCount; ++i)
+            {
+                FString Ref; Job->NodeOps[i]->TryGetStringField(TEXT("ref"), Ref);
+                const FString* Id = Job->Refs.Find(Ref);
+                UEdGraphNode* Nd = (Id && PlaceBP) ? FUnrealMCPCommonUtils::FindNodeByGuid(PlaceBP, *Id, PlaceGraph) : nullptr;
+                In.Sizes[i] = Nd ? FUnrealMCPCommonUtils::EstimateNodeSize(Nd) : FVector2D(220.0f, 100.0f);
+            }
+            for (const TSharedPtr<FJsonObject>& E : Job->EdgeOps)
+            {
+                FString S, T;
+                E->TryGetStringField(TEXT("s"), S);
+                E->TryGetStringField(TEXT("t"), T);
+                const int32* Si = RefIndex.Find(S);
+                const int32* Ti = RefIndex.Find(T);
+                In.Edges.Add((Si && Ti) ? TPair<int32, int32>(*Si, *Ti) : TPair<int32, int32>(-1, -1));
+            }
+
+            FUnrealMCPCommonUtils::FLayoutOutput Layout;
+            FUnrealMCPCommonUtils::LayeredLayout(In, Job->ColGap, Job->RowGap, Job->Origin, Layout);
+            Job->EdgeKnots = Layout.EdgeKnots;
+
+            for (int32 i = 0; i < Job->NodeOps.Num(); ++i)
+            {
+                FString Ref; Job->NodeOps[i]->TryGetStringField(TEXT("ref"), Ref);
+                const FString* Id = Job->Refs.Find(Ref);
+                if (!Id || !Layout.Positions.IsValidIndex(i)) { continue; }
+                TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+                P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+                P->SetStringField(TEXT("graph_name"), Job->GraphName);
+                P->SetStringField(TEXT("node_id"), *Id);
+                TArray<TSharedPtr<FJsonValue>> Arr;
+                Arr.Add(MakeShared<FJsonValueNumber>(Layout.Positions[i].X));
+                Arr.Add(MakeShared<FJsonValueNumber>(Layout.Positions[i].Y));
+                P->SetArrayField(TEXT("position"), Arr);
+                P->SetBoolField(TEXT("force"), true); // layout already rule-validated; skip the transient move check
+                TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("set_blueprint_node_position"), P);
+                if (!bOk(Res)) { RecordFailure(FString::Printf(TEXT("place:%s"), *Ref), Res); }
+            }
+        }
+        Job->bPlaced = true;
+    }
+
     // 2) Connect edges (refs resolved to the GUIDs captured above).
     Job->Phase = TEXT("connecting");
     while (Job->EdgeCursor < Job->EdgeOps.Num() && BudgetLeft > 0)
@@ -1577,16 +1846,39 @@ bool FUnrealMCPEditorCommands::RunBlueprintPlanChunk(const FString& JobId, int32
         Op->TryGetStringField(TEXT("sp"), SP);
         Op->TryGetStringField(TEXT("tp"), TP);
 
-        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
-        P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
-        P->SetStringField(TEXT("graph_name"), Job->GraphName);
-        P->SetStringField(TEXT("source_node_id"), Resolve(S));
-        P->SetStringField(TEXT("target_node_id"), Resolve(T));
-        P->SetStringField(TEXT("source_pin"), SP);
-        P->SetStringField(TEXT("target_pin"), TP);
-
-        TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("connect_blueprint_nodes"), P);
-        if (!bOk(Res)) { RecordFailure(FString::Printf(TEXT("%s.%s -> %s.%s"), *S, *SP, *T, *TP), Res); }
+        if (Job->bAutoLayout)
+        {
+            // Trusted layout: wire with the low-level helper, bypassing the straight-line
+            // crossing/length checks that a knot passing near a column can trip.
+            UBlueprint* LayoutBP = FUnrealMCPCommonUtils::FindBlueprint(Job->BlueprintName);
+            UEdGraph* LayoutGraph = LayoutBP ? FUnrealMCPCommonUtils::FindGraphByName(LayoutBP, Job->GraphName) : nullptr;
+            UEdGraphNode* SrcNode = (LayoutGraph && LayoutBP) ? FUnrealMCPCommonUtils::FindNodeByGuid(LayoutBP, Resolve(S), LayoutGraph) : nullptr;
+            UEdGraphNode* DstNode = (LayoutGraph && LayoutBP) ? FUnrealMCPCommonUtils::FindNodeByGuid(LayoutBP, Resolve(T), LayoutGraph) : nullptr;
+            static const TArray<FVector2D> EmptyKnots;
+            const TArray<FVector2D>& KnotPath = Job->EdgeKnots.IsValidIndex(Job->EdgeCursor) ? Job->EdgeKnots[Job->EdgeCursor] : EmptyKnots;
+            if (LayoutGraph && SrcNode && DstNode && FUnrealMCPCommonUtils::ConnectWithKnots(LayoutGraph, SrcNode, SP, DstNode, TP, KnotPath))
+            {
+                // Connected.
+            }
+            else
+            {
+                TSharedPtr<FJsonObject> ErrObj = MakeShared<FJsonObject>();
+                ErrObj->SetStringField(TEXT("error"), TEXT("layout wiring failed (node not found or connect rejected)"));
+                RecordFailure(FString::Printf(TEXT("%s.%s -> %s.%s"), *S, *SP, *T, *TP), ErrObj);
+            }
+        }
+        else
+        {
+            TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+            P->SetStringField(TEXT("blueprint_name"), Job->BlueprintName);
+            P->SetStringField(TEXT("graph_name"), Job->GraphName);
+            P->SetStringField(TEXT("source_node_id"), Resolve(S));
+            P->SetStringField(TEXT("target_node_id"), Resolve(T));
+            P->SetStringField(TEXT("source_pin"), SP);
+            P->SetStringField(TEXT("target_pin"), TP);
+            TSharedPtr<FJsonObject> Res = SubCommandRouter(TEXT("connect_blueprint_nodes"), P);
+            if (!bOk(Res)) { RecordFailure(FString::Printf(TEXT("%s.%s -> %s.%s"), *S, *SP, *T, *TP), Res); }
+        }
 
         Job->EdgeCursor++;
         Job->Applied++;
@@ -1666,7 +1958,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetPlanStatus(const TSha
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> ActorArray;
     for (AActor* Actor : AllActors)
@@ -1692,7 +1984,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindActorsByName(const T
     }
     
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> MatchingActors;
     for (AActor* Actor : AllActors)
@@ -1725,6 +2017,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
+    // Optional: permit a duplicate base name (a free, suffixed name is derived below).
+    bool bAllowDuplicate = false;
+    Params->TryGetBoolField(TEXT("allow_duplicate"), bAllowDuplicate);
+
     // Get optional transform parameters
     FVector Location(0.0f, 0.0f, 0.0f);
     FRotator Rotation(0.0f, 0.0f, 0.0f);
@@ -1755,11 +2051,26 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     // Check if an actor with this name already exists
     TArray<AActor*> AllActors;
     UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+    TSet<FString> ExistingNames;
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor)
+        {
+            ExistingNames.Add(Actor->GetName());
+        }
+    }
+    if (ExistingNames.Contains(ActorName))
+    {
+        if (!bAllowDuplicate)
         {
             return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor with name '%s' already exists"), *ActorName));
+        }
+        // allow_duplicate: derive a free name so the spawn can proceed instead of failing.
+        const FString BaseName = ActorName;
+        int32 Suffix = 1;
+        while (ExistingNames.Contains(ActorName))
+        {
+            ActorName = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++);
         }
     }
 
@@ -1767,23 +2078,24 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
     SpawnParams.Name = *ActorName;
 
-    if (ActorType == TEXT("StaticMeshActor"))
+    // Case-insensitive: callers may pass any casing (e.g. "POINTLIGHT", "pointlight").
+    if (ActorType.Equals(TEXT("StaticMeshActor"), ESearchCase::IgnoreCase))
     {
         NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
     }
-    else if (ActorType == TEXT("PointLight"))
+    else if (ActorType.Equals(TEXT("PointLight"), ESearchCase::IgnoreCase))
     {
         NewActor = World->SpawnActor<APointLight>(APointLight::StaticClass(), Location, Rotation, SpawnParams);
     }
-    else if (ActorType == TEXT("SpotLight"))
+    else if (ActorType.Equals(TEXT("SpotLight"), ESearchCase::IgnoreCase))
     {
         NewActor = World->SpawnActor<ASpotLight>(ASpotLight::StaticClass(), Location, Rotation, SpawnParams);
     }
-    else if (ActorType == TEXT("DirectionalLight"))
+    else if (ActorType.Equals(TEXT("DirectionalLight"), ESearchCase::IgnoreCase))
     {
         NewActor = World->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), Location, Rotation, SpawnParams);
     }
-    else if (ActorType == TEXT("CameraActor"))
+    else if (ActorType.Equals(TEXT("CameraActor"), ESearchCase::IgnoreCase))
     {
         NewActor = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), Location, Rotation, SpawnParams);
     }
@@ -1815,7 +2127,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TShare
     }
 
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
     
     for (AActor* Actor : AllActors)
     {
@@ -1852,18 +2164,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const 
     }
 
     // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
+    AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(ActorName);
 
     if (!TargetActor)
     {
@@ -1903,18 +2204,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorProperties(const
     }
 
     // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
+    AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(ActorName);
 
     if (!TargetActor)
     {
@@ -1935,18 +2225,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorProperty(const T
     }
 
     // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
+    AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(ActorName);
 
     if (!TargetActor)
     {
@@ -2108,18 +2387,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
     if (HasTargetActor)
     {
         // Find the actor
-        AActor* TargetActor = nullptr;
-        TArray<AActor*> AllActors;
-        UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-        
-        for (AActor* Actor : AllActors)
-        {
-            if (Actor && Actor->GetName() == TargetActorName)
-            {
-                TargetActor = Actor;
-                break;
-            }
-        }
+        AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(TargetActorName);
 
         if (!TargetActor)
         {

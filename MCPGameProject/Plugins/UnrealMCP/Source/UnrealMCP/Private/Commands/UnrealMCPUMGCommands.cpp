@@ -80,6 +80,18 @@ namespace
 
 		return nullptr;
 	}
+
+	// UMG handlers historically reported failures with only an "error" field and no
+	// "success" flag, which the bridge reads as success. Normalise so a UMG failure is
+	// always explicit.
+	static TSharedPtr<FJsonObject> WithSuccessFlag(TSharedPtr<FJsonObject> Response)
+	{
+		if (Response.IsValid() && Response->HasField(TEXT("error")) && !Response->HasField(TEXT("success")))
+		{
+			Response->SetBoolField(TEXT("success"), false);
+		}
+		return Response;
+	}
 }
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
@@ -90,27 +102,27 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 {
 	if (CommandName == TEXT("create_umg_widget_blueprint"))
 	{
-		return HandleCreateUMGWidgetBlueprint(Params);
+		return WithSuccessFlag(HandleCreateUMGWidgetBlueprint(Params));
 	}
 	else if (CommandName == TEXT("add_text_block_to_widget"))
 	{
-		return HandleAddTextBlockToWidget(Params);
+		return WithSuccessFlag(HandleAddTextBlockToWidget(Params));
 	}
 	else if (CommandName == TEXT("add_widget_to_viewport"))
 	{
-		return HandleAddWidgetToViewport(Params);
+		return WithSuccessFlag(HandleAddWidgetToViewport(Params));
 	}
 	else if (CommandName == TEXT("add_button_to_widget"))
 	{
-		return HandleAddButtonToWidget(Params);
+		return WithSuccessFlag(HandleAddButtonToWidget(Params));
 	}
 	else if (CommandName == TEXT("bind_widget_event"))
 	{
-		return HandleBindWidgetEvent(Params);
+		return WithSuccessFlag(HandleBindWidgetEvent(Params));
 	}
 	else if (CommandName == TEXT("set_text_block_binding"))
 	{
-		return HandleSetTextBlockBinding(Params);
+		return WithSuccessFlag(HandleSetTextBlockBinding(Params));
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown UMG command: %s"), *CommandName));

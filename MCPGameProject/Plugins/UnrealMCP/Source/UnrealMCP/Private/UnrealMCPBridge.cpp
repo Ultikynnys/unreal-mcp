@@ -165,7 +165,7 @@ void UUnrealMCPBridge::StartServer()
     FIPv4Endpoint Endpoint(ServerAddress, Port);
     if (!NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
     {
-        UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to bind listener socket to %s:%d"), *ServerAddress.ToString(), Port);
+        UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to bind listener socket to %s:%d - another MCP server may already own this port (e.g. the in-editor Python mcp_unreal_engine.py, disabled by default for exactly this reason)"), *ServerAddress.ToString(), Port);
         return;
     }
 
@@ -299,7 +299,8 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("import_asset") ||
         CommandType == TEXT("get_import_status") ||
         CommandType == TEXT("apply_blueprint_plan") ||
-        CommandType == TEXT("get_plan_status"))
+        CommandType == TEXT("get_plan_status") ||
+        CommandType == TEXT("recover_editor"))
     {
         return EditorCommands->HandleCommand(CommandType, Params);
     }
@@ -333,7 +334,9 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("validate_blueprint_graph") ||
         CommandType == TEXT("set_blueprint_node_position") ||
         CommandType == TEXT("add_blueprint_reroute_node") ||
-        CommandType == TEXT("set_blueprint_node_pin_default"))
+        CommandType == TEXT("set_blueprint_node_pin_default") ||
+        CommandType == TEXT("get_blueprint_node_bounds") ||
+        CommandType == TEXT("auto_layout_blueprint_graph"))
     {
         return BlueprintNodeCommands->HandleCommand(CommandType, Params);
     }

@@ -1,4 +1,5 @@
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Editor.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -36,6 +37,43 @@
 #include "BlueprintActionDatabase.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Templates/Function.h"
+
+// Reasonable-area guard rails for node placement. Deliberately generous: they exist to
+// catch astronomical gaps (runaway agents / bad plan coordinates), not to police layout.
+static constexpr float GMaxNodeCoordinate = 100000.0f;  // absolute |x|,|y| backstop
+static constexpr float GMaxPlacementDrift = 20000.0f;   // max distance beyond the current graph box
+
+// Actor utilities
+UWorld* FUnrealMCPCommonUtils::GetEditorWorld()
+{
+    return GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+}
+
+AActor* FUnrealMCPCommonUtils::ResolveActor(const FString& Identifier)
+{
+    UWorld* World = GetEditorWorld();
+    if (!World || Identifier.IsEmpty())
+    {
+        return nullptr;
+    }
+    TArray<AActor*> Actors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), Actors);
+    // Path first (uniquely identifies), then label, then raw object name.
+    for (AActor* Actor : Actors)
+    {
+        if (Actor && Actor->GetPathName() == Identifier) { return Actor; }
+    }
+    for (AActor* Actor : Actors)
+    {
+        if (Actor && Actor->GetActorLabel() == Identifier) { return Actor; }
+    }
+    for (AActor* Actor : Actors)
+    {
+        if (Actor && Actor->GetName() == Identifier) { return Actor; }
+    }
+    return nullptr;
+}
 
 // JSON Utilities
 TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::CreateErrorResponse(const FString& Message)
@@ -819,16 +857,29 @@ UEdGraphPin* FUnrealMCPCommonUtils::FindPin(UEdGraphNode* Node, const FString& P
         }
     }
     
-    // If we're looking for a component output and didn't find it by name, try to find the first data output pin
+    // If we're looking for a VariableGet output and didn't find it by name, fall back
+    // only when there is exactly ONE data output pin - otherwise the choice is ambiguous
+    // and guessing could wire the wrong pin.
     if (Direction == EGPD_Output && Cast<UK2Node_VariableGet>(Node) != nullptr)
     {
+        UEdGraphPin* SoleOutput = nullptr;
+        int32 DataOutputCount = 0;
         for (UEdGraphPin* Pin : Node->Pins)
         {
             if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
             {
-                UE_LOG(LogTemp, Display, TEXT("  - Found fallback data output pin: '%s'"), *Pin->PinName.ToString());
-                return Pin;
+                SoleOutput = Pin;
+                ++DataOutputCount;
             }
+        }
+        if (DataOutputCount == 1)
+        {
+            UE_LOG(LogTemp, Display, TEXT("  - Found sole fallback data output pin: '%s'"), *SoleOutput->PinName.ToString());
+            return SoleOutput;
+        }
+        if (DataOutputCount > 1)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("  - Pin '%s' not found on VariableGet '%s' and %d data outputs are ambiguous; not guessing"), *PinName, *Node->GetName(), DataOutputCount);
         }
     }
     
@@ -1064,6 +1115,31 @@ UK2Node_Event* FUnrealMCPCommonUtils::FindExistingEventNode(UEdGraph* Graph, con
     return nullptr;
 }
 
+namespace
+{
+    // Accept a bool either as a JSON boolean or as the string "true"/"false"; reject
+    // anything else so a wrong-typed value fails loudly instead of coercing to false.
+    static bool MCPJsonToBool(const TSharedPtr<FJsonValue>& Value, bool& Out)
+    {
+        if (Value->Type == EJson::Boolean) { Out = Value->AsBool(); return true; }
+        if (Value->Type == EJson::String)
+        {
+            const FString S = Value->AsString();
+            if (S.Equals(TEXT("true"), ESearchCase::IgnoreCase)) { Out = true; return true; }
+            if (S.Equals(TEXT("false"), ESearchCase::IgnoreCase)) { Out = false; return true; }
+        }
+        return false;
+    }
+
+    // Accept a number as a JSON number or a numeric string; reject anything else.
+    static bool MCPJsonToDouble(const TSharedPtr<FJsonValue>& Value, double& Out)
+    {
+        if (Value->Type == EJson::Number) { Out = Value->AsNumber(); return true; }
+        if (Value->Type == EJson::String && Value->AsString().IsNumeric()) { Out = FCString::Atod(*Value->AsString()); return true; }
+        return false;
+    }
+}
+
 bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& PropertyName, 
                                      const TSharedPtr<FJsonValue>& Value, FString& OutErrorMessage)
 {
@@ -1085,27 +1161,70 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
     // Handle different property types
     if (Property->IsA<FBoolProperty>())
     {
-        ((FBoolProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsBool());
+        bool BoolValue = false;
+        if (!MCPJsonToBool(Value, BoolValue))
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a boolean value (true/false)"), *PropertyName);
+            return false;
+        }
+        ((FBoolProperty*)Property)->SetPropertyValue(PropertyAddr, BoolValue);
         return true;
     }
     else if (Property->IsA<FIntProperty>())
     {
-        int32 IntValue = static_cast<int32>(Value->AsNumber());
+        double NumValue = 0.0;
+        if (!MCPJsonToDouble(Value, NumValue))
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a number value"), *PropertyName);
+            return false;
+        }
         FIntProperty* IntProperty = CastField<FIntProperty>(Property);
         if (IntProperty)
         {
-            IntProperty->SetPropertyValue_InContainer(Object, IntValue);
+            IntProperty->SetPropertyValue_InContainer(Object, static_cast<int32>(NumValue));
             return true;
         }
     }
     else if (Property->IsA<FFloatProperty>())
     {
-        ((FFloatProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsNumber());
+        double NumValue = 0.0;
+        if (!MCPJsonToDouble(Value, NumValue))
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a number value"), *PropertyName);
+            return false;
+        }
+        ((FFloatProperty*)Property)->SetPropertyValue(PropertyAddr, (float)NumValue);
+        return true;
+    }
+    else if (Property->IsA<FDoubleProperty>())
+    {
+        double NumValue = 0.0;
+        if (!MCPJsonToDouble(Value, NumValue))
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a number value"), *PropertyName);
+            return false;
+        }
+        ((FDoubleProperty*)Property)->SetPropertyValue(PropertyAddr, NumValue);
         return true;
     }
     else if (Property->IsA<FStrProperty>())
     {
+        if (Value->Type != EJson::String)
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a string value"), *PropertyName);
+            return false;
+        }
         ((FStrProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsString());
+        return true;
+    }
+    else if (Property->IsA<FNameProperty>())
+    {
+        if (Value->Type != EJson::String)
+        {
+            OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a string value"), *PropertyName);
+            return false;
+        }
+        ((FNameProperty*)Property)->SetPropertyValue(PropertyAddr, FName(*Value->AsString()));
         return true;
     }
     else if (Property->IsA<FByteProperty>())
@@ -1180,9 +1299,14 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
         }
         else
         {
-            // Regular byte property
-            uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
-            ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+            // Regular (non-enum) byte property.
+            double NumValue = 0.0;
+            if (!MCPJsonToDouble(Value, NumValue))
+            {
+                OutErrorMessage = FString::Printf(TEXT("Property '%s' expects a number value"), *PropertyName);
+                return false;
+            }
+            ByteProp->SetPropertyValue(PropertyAddr, static_cast<uint8>(NumValue));
             return true;
         }
     }
@@ -1328,11 +1452,102 @@ float FUnrealMCPCommonUtils::NodeGap(const UEdGraphNode* A, const UEdGraphNode* 
     return FMath::Sqrt(GapX * GapX + GapY * GapY);
 }
 
+void FUnrealMCPCommonUtils::ComputeGraphBounds(UEdGraph* Graph, FVector2D& OutMin, FVector2D& OutMax, int32& OutCount, bool bIncludeStructural)
+{
+    OutMin = FVector2D(0.0f, 0.0f);
+    OutMax = FVector2D(0.0f, 0.0f);
+    OutCount = 0;
+    if (!Graph)
+    {
+        return;
+    }
+
+    OutMin = FVector2D(FLT_MAX, FLT_MAX);
+    OutMax = FVector2D(-FLT_MAX, -FLT_MAX);
+    for (UEdGraphNode* Node : Graph->Nodes)
+    {
+        if (!Node) { continue; }
+        if (!bIncludeStructural && IsStructuralNode(Node)) { continue; }
+        const FVector2D Pos(Node->NodePosX, Node->NodePosY);
+        const FVector2D Size = EstimateNodeSize(Node);
+        OutMin.X = FMath::Min(OutMin.X, Pos.X);
+        OutMin.Y = FMath::Min(OutMin.Y, Pos.Y);
+        OutMax.X = FMath::Max(OutMax.X, Pos.X + Size.X);
+        OutMax.Y = FMath::Max(OutMax.Y, Pos.Y + Size.Y);
+        ++OutCount;
+    }
+    if (OutCount == 0)
+    {
+        OutMin = FVector2D(0.0f, 0.0f);
+        OutMax = FVector2D(0.0f, 0.0f);
+    }
+}
+
+bool FUnrealMCPCommonUtils::ValidateNodeBounds(UEdGraph* Graph, UEdGraphNode* NewNode, FString& OutErrorMessage)
+{
+    if (!Graph || !NewNode)
+    {
+        return true;
+    }
+
+    const FString Title = NewNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+    const int32 X = NewNode->NodePosX;
+    const int32 Y = NewNode->NodePosY;
+
+    // Absolute backstop: reject anything absurdly far from the origin.
+    if (FMath::Abs((float)X) > GMaxNodeCoordinate || FMath::Abs((float)Y) > GMaxNodeCoordinate)
+    {
+        OutErrorMessage = FString::Printf(
+            TEXT("Node '%s' at (%d, %d) is outside the allowed area (+/-%.0f on each axis). Use get_blueprint_node_bounds and place within the area."),
+            *Title, X, Y, GMaxNodeCoordinate);
+        return false;
+    }
+
+    // Drift cap: the new node must land within the box of the OTHER nodes plus a
+    // generous margin, so a single astronomical jump is rejected while the box grows
+    // normally. Structural nodes (knots/comments) are ignored so a stray reroute can't
+    // define -- or be judged against -- the layout area.
+    FVector2D Min(FLT_MAX, FLT_MAX);
+    FVector2D Max(-FLT_MAX, -FLT_MAX);
+    int32 OtherCount = 0;
+    for (UEdGraphNode* Other : Graph->Nodes)
+    {
+        if (!Other || Other == NewNode || IsStructuralNode(Other)) { continue; }
+        const FVector2D Pos(Other->NodePosX, Other->NodePosY);
+        const FVector2D Size = EstimateNodeSize(Other);
+        Min.X = FMath::Min(Min.X, Pos.X);
+        Min.Y = FMath::Min(Min.Y, Pos.Y);
+        Max.X = FMath::Max(Max.X, Pos.X + Size.X);
+        Max.Y = FMath::Max(Max.Y, Pos.Y + Size.Y);
+        ++OtherCount;
+    }
+    if (OtherCount > 0)
+    {
+        const float LoX = Min.X - GMaxPlacementDrift;
+        const float HiX = Max.X + GMaxPlacementDrift;
+        const float LoY = Min.Y - GMaxPlacementDrift;
+        const float HiY = Max.Y + GMaxPlacementDrift;
+        if (X < LoX || X > HiX || Y < LoY || Y > HiY)
+        {
+            OutErrorMessage = FString::Printf(
+                TEXT("Node '%s' at (%d, %d) is too far from the existing graph. Current area X[%.0f..%.0f] Y[%.0f..%.0f] (max drift %.0f). Use get_blueprint_node_bounds and place within/near this area."),
+                *Title, X, Y, Min.X, Max.X, Min.Y, Max.Y, GMaxPlacementDrift);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool FUnrealMCPCommonUtils::ValidatePlacement(UEdGraph* Graph, UEdGraphNode* NewNode, FString& OutErrorMessage)
 {
     if (!Graph || !NewNode)
     {
         return true;
+    }
+
+    if (!ValidateNodeBounds(Graph, NewNode, OutErrorMessage))
+    {
+        return false;
     }
 
     for (UEdGraphNode* Other : Graph->Nodes)
@@ -1513,4 +1728,328 @@ void FUnrealMCPCommonUtils::CollectGraphEdges(UEdGraph* Graph, TArray<TPair<UEdG
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Graph auto-layout (layered, left -> right)
+// ---------------------------------------------------------------------------
+
+void FUnrealMCPCommonUtils::LayeredLayout(const FLayoutInput& In, float ColGap, float RowGap, const FVector2D& Origin, FLayoutOutput& Out)
+{
+    const int32 N = In.NodeCount;
+    Out.Positions.Init(FVector2D::ZeroVector, FMath::Max(0, N));
+    Out.EdgeKnots.Reset();
+    Out.EdgeKnots.SetNum(In.Edges.Num());
+    if (N <= 0)
+    {
+        return;
+    }
+
+    auto SizeOf = [&In](int32 i) -> FVector2D
+    {
+        if (In.Sizes.IsValidIndex(i) && In.Sizes[i].X > 0.0f && In.Sizes[i].Y > 0.0f)
+        {
+            return In.Sizes[i];
+        }
+        return FVector2D(220.0f, 100.0f);
+    };
+
+    TArray<TArray<int32>> Succs; Succs.SetNum(N);
+    TArray<TArray<int32>> Preds; Preds.SetNum(N);
+    for (const TPair<int32, int32>& E : In.Edges)
+    {
+        if (!Succs.IsValidIndex(E.Key) || !Succs.IsValidIndex(E.Value) || E.Key == E.Value) { continue; }
+        Succs[E.Key].Add(E.Value);
+        Preds[E.Value].Add(E.Key);
+    }
+
+    // Longest-path ranking from sources; a back-edge (cycle) is treated as a source
+    // boundary so ranking terminates.
+    TArray<int32> Rank; Rank.Init(-1, N);
+    TArray<bool> OnStack; OnStack.Init(false, N);
+    TFunction<int32(int32)> RankOf;
+    RankOf = [&](int32 i) -> int32
+    {
+        if (Rank[i] >= 0) { return Rank[i]; }
+        if (OnStack[i]) { return 0; }
+        OnStack[i] = true;
+        int32 R = 0;
+        for (int32 P : Preds[i]) { R = FMath::Max(R, RankOf(P) + 1); }
+        OnStack[i] = false;
+        Rank[i] = R;
+        return R;
+    };
+    for (int32 i = 0; i < N; ++i) { RankOf(i); }
+
+    int32 MaxRank = 0;
+    for (int32 i = 0; i < N; ++i) { MaxRank = FMath::Max(MaxRank, Rank[i]); }
+
+    TArray<TArray<int32>> RankNodes; RankNodes.SetNum(MaxRank + 1);
+    for (int32 i = 0; i < N; ++i) { RankNodes[Rank[i]].Add(i); }
+
+    // Order within each rank to reduce crossings (barycenter sweeps).
+    TArray<int32> OrderIndex; OrderIndex.Init(0, N);
+    for (int32 r = 0; r <= MaxRank; ++r)
+    {
+        for (int32 k = 0; k < RankNodes[r].Num(); ++k) { OrderIndex[RankNodes[r][k]] = k; }
+    }
+    auto Barycenter = [&](int32 Node, const TArray<TArray<int32>>& Neighbors) -> float
+    {
+        float Sum = 0.0f;
+        int32 Cnt = 0;
+        for (int32 Nb : Neighbors[Node]) { Sum += (float)OrderIndex[Nb]; ++Cnt; }
+        return Cnt > 0 ? (Sum / (float)Cnt) : (float)OrderIndex[Node];
+    };
+    for (int32 Iter = 0; Iter < 4; ++Iter)
+    {
+        for (int32 r = 1; r <= MaxRank; ++r)
+        {
+            RankNodes[r].Sort([&](int32 a, int32 b) { return Barycenter(a, Preds) < Barycenter(b, Preds); });
+            for (int32 k = 0; k < RankNodes[r].Num(); ++k) { OrderIndex[RankNodes[r][k]] = k; }
+        }
+        for (int32 r = MaxRank - 1; r >= 0; --r)
+        {
+            RankNodes[r].Sort([&](int32 a, int32 b) { return Barycenter(a, Succs) < Barycenter(b, Succs); });
+            for (int32 k = 0; k < RankNodes[r].Num(); ++k) { OrderIndex[RankNodes[r][k]] = k; }
+        }
+    }
+
+    // Column X: each column starts after the previous column's widest node + ColGap, so
+    // every left->right wire is roughly ColGap long (< the connect-length limit).
+    TArray<float> ColX; ColX.SetNum(MaxRank + 1);
+    float X = Origin.X;
+    for (int32 r = 0; r <= MaxRank; ++r)
+    {
+        ColX[r] = X;
+        float W = 0.0f;
+        for (int32 i : RankNodes[r]) { W = FMath::Max(W, (float)SizeOf(i).X); }
+        X += W + ColGap;
+    }
+
+    // Vertical stacking, centred on Origin.Y, as a seed for the straightening pass below.
+    for (int32 r = 0; r <= MaxRank; ++r)
+    {
+        float TotalH = 0.0f;
+        for (int32 i : RankNodes[r]) { TotalH += SizeOf(i).Y + RowGap; }
+        if (RankNodes[r].Num() > 0) { TotalH -= RowGap; }
+        float Y = Origin.Y - TotalH * 0.5f;
+        for (int32 i : RankNodes[r])
+        {
+            Out.Positions[i] = FVector2D(ColX[r], Y);
+            Y += SizeOf(i).Y + RowGap;
+        }
+    }
+
+    // Coordinate assignment / straightening: pull each node toward the mean y of its
+    // neighbours -- this is what minimises connection length and removes the diagonal
+    // swoop -- then resolve within-column overlap by pushing nodes apart. Alternating
+    // left->right (predecessors) and right->left (successors) sweeps converge to straight,
+    // short wires.
+    auto AlignRank = [&](int32 r, const TArray<TArray<int32>>& Neighbors)
+    {
+        if (RankNodes[r].Num() == 0) { return; }
+        TArray<TPair<float, int32>> SortedByWant;
+        SortedByWant.Reserve(RankNodes[r].Num());
+        for (int32 i : RankNodes[r])
+        {
+            float Sum = 0.0f;
+            int32 Cnt = 0;
+            for (int32 Nb : Neighbors[i]) { Sum += Out.Positions[Nb].Y; ++Cnt; }
+            const float Want = (Cnt > 0) ? (Sum / (float)Cnt) : Out.Positions[i].Y;
+            SortedByWant.Add(TPair<float, int32>(Want, i));
+        }
+        SortedByWant.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
+
+        // Anchor the block at the topmost desired y and stack downward. Anchoring (rather
+        // than re-centring on the mean) keeps the pass drift-free: each rank is pulled
+        // straight toward its already-placed predecessors, mirroring them, with no
+        // feedback loop to walk the whole layout off-origin.
+        float Y = SortedByWant[0].Key;
+        for (const TPair<float, int32>& D : SortedByWant)
+        {
+            const FVector2D Sz = SizeOf(D.Value);
+            Y = FMath::Max(Y, D.Key); // sit at the aligned y, but never ride up into the node above
+            Out.Positions[D.Value] = FVector2D(ColX[r], Y);
+            Y += Sz.Y + RowGap;
+        }
+    };
+    // One left->right pass suffices (every rank's predecessors are already final); a second
+    // pass smooths second-order effects without introducing drift.
+    for (int32 Iter = 0; Iter < 2; ++Iter)
+    {
+        for (int32 r = 1; r <= MaxRank; ++r) { AlignRank(r, Preds); }
+    }
+
+    // Occupied vertical span of each column, used to nudge knots clear of the nodes so a
+    // wire routed through a knot does not cut across them.
+    TArray<float> ColNodeMinY; ColNodeMinY.Init(0.0f, MaxRank + 1);
+    TArray<float> ColNodeMaxY; ColNodeMaxY.Init(0.0f, MaxRank + 1);
+    for (int32 r = 0; r <= MaxRank; ++r)
+    {
+        float Mn = FLT_MAX;
+        float Mx = -FLT_MAX;
+        for (int32 i : RankNodes[r])
+        {
+            Mn = FMath::Min(Mn, Out.Positions[i].Y);
+            Mx = FMath::Max(Mx, Out.Positions[i].Y + (float)SizeOf(i).Y);
+        }
+        ColNodeMinY[r] = (Mn == FLT_MAX) ? 0.0f : Mn;
+        ColNodeMaxY[r] = (Mx == -FLT_MAX) ? 0.0f : Mx;
+    }
+
+    // Knot chains for edges spanning more than one column.
+    for (int32 e = 0; e < In.Edges.Num(); ++e)
+    {
+        const int32 u = In.Edges[e].Key;
+        const int32 v = In.Edges[e].Value;
+        if (!Out.Positions.IsValidIndex(u) || !Out.Positions.IsValidIndex(v)) { continue; }
+        const int32 ru = Rank[u];
+        const int32 rv = Rank[v];
+        if (rv - ru <= 1) { continue; } // adjacent (or back edge): a direct wire is fine
+        for (int32 r = ru + 1; r < rv; ++r)
+        {
+            const float T = (float)(r - ru) / (float)(rv - ru);
+            float Y = FMath::Lerp(Out.Positions[u].Y, Out.Positions[v].Y, T);
+            // If the knot would sit within (or beside) the column's node band, lift it just
+            // above or drop it just below -- whichever is nearer -- so the through-wire
+            // clears the nodes instead of cutting across them.
+            if (RankNodes[r].Num() > 0)
+            {
+                const float KnotClearance = 60.0f;
+                const float Band = 40.0f;
+                if (Y + Band > ColNodeMinY[r] && Y < ColNodeMaxY[r] + Band)
+                {
+                    const float Above = ColNodeMinY[r] - KnotClearance;
+                    const float Below = ColNodeMaxY[r] + KnotClearance;
+                    Y = (FMath::Abs(Y - Above) <= FMath::Abs(Y - Below)) ? Above : Below;
+                }
+            }
+            Out.EdgeKnots[e].Add(FVector2D(ColX[r], Y));
+        }
+    }
+}
+
+void FUnrealMCPCommonUtils::CollectLogicEdges(UEdGraph* Graph, TArray<FGraphEdge>& Out)
+{
+    Out.Reset();
+    if (!Graph)
+    {
+        return;
+    }
+    TSet<FString> Seen;
+
+    // Resolve a linked pin to the real (non-knot) downstream endpoints, following any
+    // chain of reroute knots in between.
+    TFunction<void(UEdGraphNode*, UEdGraphPin*, TArray<TPair<UEdGraphNode*, FString>>&, TSet<const UEdGraphNode*>&)> Walk;
+    Walk = [&](UEdGraphNode* N, UEdGraphPin* Pin, TArray<TPair<UEdGraphNode*, FString>>& Targets, TSet<const UEdGraphNode*>& Visited)
+    {
+        if (!N) { return; }
+        if (IsStructuralNode(N))
+        {
+            if (Visited.Contains(N)) { return; }
+            Visited.Add(N);
+            for (UEdGraphPin* OP : N->Pins)
+            {
+                if (!OP || OP->Direction != EGPD_Output) { continue; }
+                for (UEdGraphPin* L : OP->LinkedTo)
+                {
+                    Walk(L ? L->GetOwningNode() : nullptr, L, Targets, Visited);
+                }
+            }
+            return;
+        }
+        Targets.Add(TPair<UEdGraphNode*, FString>(N, Pin ? Pin->PinName.ToString() : FString()));
+    };
+
+    for (UEdGraphNode* Node : Graph->Nodes)
+    {
+        if (!Node || IsStructuralNode(Node)) { continue; }
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (!Pin || Pin->Direction != EGPD_Output) { continue; }
+            for (UEdGraphPin* Linked : Pin->LinkedTo)
+            {
+                UEdGraphNode* Other = Linked ? Linked->GetOwningNode() : nullptr;
+                if (!Other) { continue; }
+                TArray<TPair<UEdGraphNode*, FString>> Targets;
+                TSet<const UEdGraphNode*> Visited;
+                Walk(Other, Linked, Targets, Visited);
+                for (const TPair<UEdGraphNode*, FString>& T : Targets)
+                {
+                    if (!T.Key || T.Key == Node) { continue; }
+                    const FString Key = Node->NodeGuid.ToString() + TEXT(":") + Pin->PinName.ToString()
+                        + TEXT("->") + T.Key->NodeGuid.ToString() + TEXT(":") + T.Value;
+                    if (Seen.Contains(Key)) { continue; }
+                    Seen.Add(Key);
+                    FGraphEdge Edge;
+                    Edge.Src = Node;
+                    Edge.SrcPin = Pin->PinName.ToString();
+                    Edge.Dst = T.Key;
+                    Edge.DstPin = T.Value;
+                    Out.Add(Edge);
+                }
+            }
+        }
+    }
+}
+
+void FUnrealMCPCommonUtils::RemoveStructuralKnots(UEdGraph* Graph, UBlueprint* Blueprint)
+{
+    if (!Graph)
+    {
+        return;
+    }
+    TArray<UEdGraphNode*> Knots;
+    for (UEdGraphNode* Node : Graph->Nodes)
+    {
+        if (Node && Node->IsA<UK2Node_Knot>()) { Knots.Add(Node); }
+    }
+    for (UEdGraphNode* Knot : Knots)
+    {
+        if (Blueprint)
+        {
+            FBlueprintEditorUtils::RemoveNode(Blueprint, Knot, /*bDontRecompile*/ true);
+        }
+        else
+        {
+            Graph->RemoveNode(Knot);
+        }
+    }
+}
+
+bool FUnrealMCPCommonUtils::ConnectWithKnots(UEdGraph* Graph, UEdGraphNode* Src, const FString& SrcPin,
+                                             UEdGraphNode* Dst, const FString& DstPin, const TArray<FVector2D>& KnotPath)
+{
+    if (!Graph || !Src || !Dst)
+    {
+        return false;
+    }
+
+    UEdGraphNode* PrevNode = Src;
+    FString PrevPin = SrcPin;
+    for (const FVector2D& KnotPos : KnotPath)
+    {
+        UK2Node_Knot* Knot = CreateKnotNode(Graph, KnotPos);
+        if (!Knot)
+        {
+            return false;
+        }
+        // Knot pins are a single input/output pair; resolve their names by direction.
+        FString KnotIn = TEXT("InputPin");
+        FString KnotOut = TEXT("OutputPin");
+        for (UEdGraphPin* P : Knot->Pins)
+        {
+            if (!P) { continue; }
+            if (P->Direction == EGPD_Input) { KnotIn = P->PinName.ToString(); }
+            else if (P->Direction == EGPD_Output) { KnotOut = P->PinName.ToString(); }
+        }
+        if (!ConnectGraphNodes(Graph, PrevNode, PrevPin, Knot, KnotIn))
+        {
+            return false;
+        }
+        PrevNode = Knot;
+        PrevPin = KnotOut;
+    }
+
+    return ConnectGraphNodes(Graph, PrevNode, PrevPin, Dst, DstPin);
 } 

@@ -71,6 +71,11 @@ private:
     TSharedPtr<FJsonObject> HandleBatchExecute(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleExecutePython(const TSharedPtr<FJsonObject>& Params);
 
+    // Recover from the "restore unsaved files" crash-recovery state that stalls startup
+    // after an abnormal shutdown: clears the on-disk recovery data and dismisses the
+    // recovery modal so the editor resumes ticking.
+    TSharedPtr<FJsonObject> HandleRecoverEditor(const TSharedPtr<FJsonObject>& Params);
+
     // Asset importing (async job + status polling)
     TSharedPtr<FJsonObject> HandleImportAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetImportStatus(const TSharedPtr<FJsonObject>& Params);

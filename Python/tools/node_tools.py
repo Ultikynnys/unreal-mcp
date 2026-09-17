@@ -926,6 +926,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         graph_name: str,
         plan_path: str = "",
         clear: bool = False,
+        auto_layout: bool = False,
         async_: bool = True,
         plan: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -955,6 +956,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
             graph_name: Target graph (e.g. 'ConstructSpline')
             plan_path: Absolute path to a JSON plan on disk (preferred for large plans)
             clear: Clear the graph first (keeps the entry node)
+            auto_layout: Compute node positions from the edges automatically (layered
+                layout + reroute knots), so node "pos" values can be omitted. Default False.
             async_: Run over editor ticks (default True). False applies inline (small plans only).
             plan: Inline plan object, used only when plan_path is empty
 
@@ -968,6 +971,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
                 "blueprint_name": blueprint_name,
                 "graph_name": graph_name,
                 "clear": clear,
+                "auto_layout": auto_layout,
                 "async": async_,
             }
             if plan_path:
@@ -1013,6 +1017,107 @@ def register_blueprint_node_tools(mcp: FastMCP):
 
         except Exception as e:
             error_msg = f"Error getting plan status: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_blueprint_node_bounds(
+        ctx: Context,
+        blueprint_name: str,
+        graph_name: str = "",
+        include_nodes: bool = False
+    ) -> Dict[str, Any]:
+        """Get a graph's bounding box and (optionally) each node's position.
+
+        Use this before placing nodes so coordinates stay inside the known area, and
+        after a placement error to see the current bounds and where free space is.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            graph_name: Optional graph name (defaults to the event graph)
+            include_nodes: Also return a per-node position list
+
+        Returns:
+            {count, min:[x,y], max:[x,y], center:[x,y], size:[w,h],
+             suggested_placement:[x,y], nodes:[{node_id, node_name, node_title,
+             pos_x, pos_y, width, height, structural}]?}
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params: Dict[str, Any] = {"blueprint_name": blueprint_name}
+            if graph_name:
+                params["graph_name"] = graph_name
+            if include_nodes:
+                params["include_nodes"] = True
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_blueprint_node_bounds", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error getting blueprint node bounds: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def auto_layout_blueprint_graph(
+        ctx: Context,
+        blueprint_name: str,
+        graph_name: str = "",
+        col_gap: float = 36.0,
+        row_gap: float = 48.0,
+        rebuild_routing: bool = True,
+        origin_x: float = 0.0,
+        origin_y: float = 0.0
+    ) -> Dict[str, Any]:
+        """Auto-place a wired graph and rebuild its routing (layered layout).
+
+        Repositions every node with a left->right layered heuristic derived from the
+        existing wires, and (when rebuild_routing) replaces the wiring with reroute
+        knots so no single wire is long or crosses a node. Undoable (one transaction).
+
+        Args:
+            blueprint_name: Target Blueprint
+            graph_name: Optional graph name (defaults to the event graph)
+            col_gap: Horizontal gap between columns (default 36; keep < 600)
+            row_gap: Vertical gap between stacked nodes (default 48)
+            rebuild_routing: Also break + rebuild wires with reroute knots (default
+                True). False repositions nodes only.
+            origin_x/origin_y: Top-left of the layout (default 0,0)
+
+        Returns:
+            {success, node_count, moved_nodes, knots_inserted, edges_rewired, routing_rebuilt}
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            params: Dict[str, Any] = {
+                "blueprint_name": blueprint_name,
+                "col_gap": col_gap,
+                "row_gap": row_gap,
+                "rebuild_routing": rebuild_routing,
+                "origin_x": origin_x,
+                "origin_y": origin_y,
+            }
+            if graph_name:
+                params["graph_name"] = graph_name
+
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            logger.info(f"Auto-laying out '{blueprint_name}.{graph_name}'")
+            response = unreal.send_command("auto_layout_blueprint_graph", params)
+            return response or {"success": False, "message": "No response from Unreal Engine"}
+
+        except Exception as e:
+            error_msg = f"Error auto-laying out graph: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 

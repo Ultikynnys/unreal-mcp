@@ -33,4 +33,6 @@ private:
     TSharedPtr<FJsonObject> HandleSetBlueprintNodePinDefault(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetBlueprintNodePosition(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddBlueprintRerouteNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetBlueprintNodeBounds(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAutoLayoutBlueprintGraph(const TSharedPtr<FJsonObject>& Params);
 }; 

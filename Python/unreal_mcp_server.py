@@ -119,7 +119,7 @@ class UnrealConnection:
         self.socket = None
         self.connected = False
 
-    def receive_full_response(self, sock, buffer_size=4096) -> bytes:
+    def receive_full_response(self, sock, buffer_size=65536) -> bytes:
         """Receive a complete response from Unreal, handling chunked data."""
         chunks = []
         sock.settimeout(5)  # 5 second timeout
@@ -131,19 +131,20 @@ class UnrealConnection:
                         raise Exception("Connection closed before receiving data")
                     break
                 chunks.append(chunk)
-                
-                # Process the data received so far
+
+                # Cheap completeness probe: a full JSON object ends with '}'. Only pay for
+                # the join+decode+parse when the newest chunk could be the last one. The old
+                # code re-decoded and re-parsed the whole (growing) buffer on every 4 KB
+                # chunk, which is O(n^2) for large payloads.
+                if not chunk.rstrip().endswith(b'}'):
+                    continue
                 data = b''.join(chunks)
-                decoded_data = data.decode('utf-8')
-                
-                # Try to parse as JSON to check if complete
                 try:
-                    json.loads(decoded_data)
-                    logger.info(f"Received complete response ({len(data)} bytes)")
+                    json.loads(data.decode('utf-8'))
+                    logger.debug(f"Received complete response ({len(data)} bytes)")
                     return data
                 except json.JSONDecodeError:
                     # Not complete JSON yet, continue reading
-                    logger.debug(f"Received partial response, waiting for more data...")
                     continue
                 except Exception as e:
                     logger.warning(f"Error processing response chunk: {str(e)}")
@@ -165,7 +166,16 @@ class UnrealConnection:
             raise
     
     def send_command(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """Send a command to Unreal Engine and get the response."""
+        """Send a command to Unreal Engine and get the response.
+
+        Serialized on _connection_lock: the server shares a single UnrealConnection,
+        so concurrent tool calls must not interleave its socket close/reconnect.
+        """
+        with _connection_lock:
+            return self._send_command_unlocked(command, params)
+
+    def _send_command_unlocked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """Send a command to Unreal Engine and get the response (caller holds _connection_lock)."""
         # Always reconnect for each command, since Unreal closes the connection after each command
         # This is different from Unity which keeps connections alive
         if self.socket:
@@ -193,7 +203,7 @@ class UnrealConnection:
             
             # Send without newline, exactly like Unity
             command_json = json.dumps(command_obj)
-            logger.info(f"Sending command: {command_json}")
+            logger.debug(f"Sending command: {command_json}")
             self.socket.sendall(command_json.encode('utf-8'))
             
             # Read response using improved handler
@@ -201,7 +211,7 @@ class UnrealConnection:
             response = json.loads(response_data.decode('utf-8'))
             
             # Log complete response for debugging
-            logger.info(f"Complete response from Unreal: {response}")
+            logger.debug(f"Complete response from Unreal: {response}")
             
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
@@ -249,9 +259,19 @@ class UnrealConnection:
 
 # Global connection state
 _unreal_connection: UnrealConnection = None
+# Serializes access to the single shared bridge connection. Concurrent MCP tool
+# calls (FastMCP may dispatch sync tools on a thread pool) must not interleave a
+# socket close/reconnect on the shared UnrealConnection.
+_connection_lock = threading.RLock()
 
 def get_unreal_connection() -> Optional[UnrealConnection]:
-    """Get the connection to Unreal Engine."""
+    """Get the connection to Unreal Engine (serialized on _connection_lock)."""
+    with _connection_lock:
+        return _get_unreal_connection_unlocked()
+
+
+def _get_unreal_connection_unlocked() -> Optional[UnrealConnection]:
+    """Get the connection to Unreal Engine (caller holds _connection_lock)."""
     global _unreal_connection
     try:
         if _unreal_connection is None:

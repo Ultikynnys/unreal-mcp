@@ -19,6 +19,7 @@ REPO_ROOT = SCRIPT.parents[2]
 
 BRIDGE_REL = "MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/UnrealMCPBridge.cpp"
 PY_TOOL_REL = "Python/tools/editor_tools.py"
+CPP_COMMANDS_REL = "MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/ThingCommands.cpp"
 
 
 def _write(root: pathlib.Path, rel: str, text: str) -> None:
@@ -73,6 +74,31 @@ class ParityCheckTests(unittest.TestCase):
             _make_py_tool(tmp, ["get_actors_in_level"])
             result = self._run(tmp)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_param_drift_fails(self):
+        """A parameter the Python layer sends but the C++ handler never reads fails."""
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _write(tmp, CPP_COMMANDS_REL,
+                   "TSharedPtr<FJsonObject> FThingCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("do_thing")) { return HandleDoThing(Params); }\n'
+                   "    return nullptr;\n"
+                   "}\n"
+                   "TSharedPtr<FJsonObject> FThingCommands::HandleDoThing(const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    Params->TryGetStringField(TEXT("a"), Var);\n'
+                   "    return nullptr;\n"
+                   "}\n")
+            _make_bridge(tmp, ["do_thing"])
+            _write(tmp, PY_TOOL_REL,
+                   "def register_editor_tools(mcp):\n"
+                   '    resp = unreal.send_command("do_thing", {"a": 1, "b": 2})\n')
+            result = self._run(tmp)
+            self.assertEqual(result.returncode, 1,
+                             "checker must fail on a param the C++ handler never reads")
+            self.assertIn("do_thing", result.stdout)
+            self.assertIn("b", result.stdout)
 
     def test_real_repo_has_parity(self):
         """The actual fork must satisfy the parity contract."""

@@ -22,6 +22,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Editor.h"
 #include "GameFramework/InputSettings.h"
 #include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
@@ -105,6 +106,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("add_blueprint_reroute_node"))
     {
         return HandleAddBlueprintRerouteNode(Params);
+    }
+    else if (CommandType == TEXT("get_blueprint_node_bounds"))
+    {
+        return HandleGetBlueprintNodeBounds(Params);
+    }
+    else if (CommandType == TEXT("auto_layout_blueprint_graph"))
+    {
+        return HandleAutoLayoutBlueprintGraph(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -2077,6 +2086,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintRerou
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create reroute node"));
     }
 
+    // Knots are exempt from overlap/wire checks (that is their purpose), but they must
+    // still land inside the reasonable graph area.
+    FString BoundsError;
+    if (!FUnrealMCPCommonUtils::ValidateNodeBounds(TargetGraph, KnotNode, BoundsError))
+    {
+        FBlueprintEditorUtils::RemoveNode(Blueprint, KnotNode, /*bDontRecompile*/ true);
+        return FUnrealMCPCommonUtils::CreateErrorResponse(BoundsError);
+    }
+
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
@@ -2095,5 +2113,263 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintRerou
         PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
     }
     ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+    return ResultObj;
+}
+
+// get_blueprint_node_bounds: the graph's axis-aligned bounding box plus, optionally, a
+// per-node position list and a suggested drop point for the next node/cluster. Lets an
+// agent place nodes inside a known area instead of guessing coordinates.
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleGetBlueprintNodeBounds(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    bool bIncludeNodes = false;
+    Params->TryGetBoolField(TEXT("include_nodes"), bIncludeNodes);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* TargetGraph = nullptr;
+    if (!GraphName.IsEmpty())
+    {
+        TargetGraph = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+        if (!TargetGraph)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+        }
+    }
+    else
+    {
+        TargetGraph = FUnrealMCPCommonUtils::FindOrCreateEventGraph(Blueprint);
+    }
+    if (!TargetGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get graph"));
+    }
+
+    const double StartSeconds = FPlatformTime::Seconds();
+
+    // Single pass over the graph: derive the bounds/count and (optionally) the per-node
+    // payload together, so each node's size is estimated exactly once. The previous version
+    // walked the graph twice (ComputeGraphBounds + a second EstimateNodeSize per node),
+    // doubling the cost of the slowest part.
+    FVector2D Min(0.0f, 0.0f);
+    FVector2D Max(0.0f, 0.0f);
+    int32 Count = 0;
+    TArray<TSharedPtr<FJsonValue>> NodesArr;
+    if (bIncludeNodes) { NodesArr.Reserve(TargetGraph->Nodes.Num()); }
+
+    for (UEdGraphNode* Node : TargetGraph->Nodes)
+    {
+        if (!Node) { continue; }
+        const FVector2D Pos((float)Node->NodePosX, (float)Node->NodePosY);
+        const FVector2D Size = FUnrealMCPCommonUtils::EstimateNodeSize(Node);
+        Min.X = FMath::Min(Min.X, Pos.X);
+        Min.Y = FMath::Min(Min.Y, Pos.Y);
+        Max.X = FMath::Max(Max.X, Pos.X + Size.X);
+        Max.Y = FMath::Max(Max.Y, Pos.Y + Size.Y);
+        ++Count;
+
+        if (bIncludeNodes)
+        {
+            TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+            NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+            NodeObj->SetStringField(TEXT("node_name"), Node->GetName());
+            NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+            NodeObj->SetNumberField(TEXT("pos_x"), Pos.X);
+            NodeObj->SetNumberField(TEXT("pos_y"), Pos.Y);
+            NodeObj->SetNumberField(TEXT("width"), Size.X);
+            NodeObj->SetNumberField(TEXT("height"), Size.Y);
+            NodeObj->SetBoolField(TEXT("structural"), FUnrealMCPCommonUtils::IsStructuralNode(Node));
+            NodesArr.Add(MakeShared<FJsonValueObject>(NodeObj));
+        }
+    }
+
+    auto Vec2Array = [](const FVector2D& V)
+    {
+        TArray<TSharedPtr<FJsonValue>> Arr;
+        Arr.Add(MakeShared<FJsonValueNumber>(V.X));
+        Arr.Add(MakeShared<FJsonValueNumber>(V.Y));
+        return Arr;
+    };
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetNumberField(TEXT("count"), Count);
+    ResultObj->SetArrayField(TEXT("min"), Vec2Array(Min));
+    ResultObj->SetArrayField(TEXT("max"), Vec2Array(Max));
+    ResultObj->SetArrayField(TEXT("center"), Vec2Array((Min + Max) * 0.5f));
+    ResultObj->SetArrayField(TEXT("size"), Vec2Array(Max - Min));
+    // Left edge, just below existing content: a safe place to start the next node/cluster.
+    ResultObj->SetArrayField(TEXT("suggested_placement"), Vec2Array(FVector2D(Min.X, Max.Y + 400.0f)));
+    if (bIncludeNodes)
+    {
+        ResultObj->SetArrayField(TEXT("nodes"), NodesArr);
+    }
+
+    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: get_blueprint_node_bounds '%s' -> %d nodes in %.2f ms (include_nodes=%d)"),
+        *BlueprintName, Count, (FPlatformTime::Seconds() - StartSeconds) * 1000.0, bIncludeNodes ? 1 : 0);
+
+    return ResultObj;
+}
+
+// auto_layout_blueprint_graph: reposition every node in a graph using a layered
+// (left->right) heuristic derived from the existing routing, and rebuild the wiring
+// with reroute knots so no single wire is long or crosses a node. Undoable.
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAutoLayoutBlueprintGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    float ColGap = 36.0f;
+    if (Params->HasField(TEXT("col_gap"))) { ColGap = (float)Params->GetNumberField(TEXT("col_gap")); }
+    float RowGap = 48.0f;
+    if (Params->HasField(TEXT("row_gap"))) { RowGap = (float)Params->GetNumberField(TEXT("row_gap")); }
+    float OriginX = 0.0f;
+    float OriginY = 0.0f;
+    if (Params->HasField(TEXT("origin_x"))) { OriginX = (float)Params->GetNumberField(TEXT("origin_x")); }
+    if (Params->HasField(TEXT("origin_y"))) { OriginY = (float)Params->GetNumberField(TEXT("origin_y")); }
+
+    bool bRebuildRouting = true;
+    Params->TryGetBoolField(TEXT("rebuild_routing"), bRebuildRouting);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    UEdGraph* TargetGraph = nullptr;
+    if (!GraphName.IsEmpty())
+    {
+        TargetGraph = FUnrealMCPCommonUtils::FindGraphByName(Blueprint, GraphName);
+        if (!TargetGraph)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+        }
+    }
+    else
+    {
+        TargetGraph = FUnrealMCPCommonUtils::FindOrCreateEventGraph(Blueprint);
+    }
+    if (!TargetGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get graph"));
+    }
+
+    // Snapshot the logic graph (reroute knots are invisible to the layout).
+    TArray<UEdGraphNode*> LogicNodes;
+    TMap<UEdGraphNode*, int32> IndexOf;
+    for (UEdGraphNode* Node : TargetGraph->Nodes)
+    {
+        if (Node && !FUnrealMCPCommonUtils::IsStructuralNode(Node))
+        {
+            IndexOf.Add(Node, LogicNodes.Num());
+            LogicNodes.Add(Node);
+        }
+    }
+
+    TArray<FUnrealMCPCommonUtils::FGraphEdge> Edges;
+    FUnrealMCPCommonUtils::CollectLogicEdges(TargetGraph, Edges);
+
+    FUnrealMCPCommonUtils::FLayoutInput In;
+    In.NodeCount = LogicNodes.Num();
+    for (UEdGraphNode* Node : LogicNodes)
+    {
+        In.Sizes.Add(FUnrealMCPCommonUtils::EstimateNodeSize(Node));
+    }
+    for (const FUnrealMCPCommonUtils::FGraphEdge& E : Edges)
+    {
+        const int32* S = IndexOf.Find(E.Src);
+        const int32* D = IndexOf.Find(E.Dst);
+        if (S && D)
+        {
+            In.Edges.Add(TPair<int32, int32>(*S, *D));
+        }
+    }
+
+    FUnrealMCPCommonUtils::FLayoutOutput Layout;
+    FUnrealMCPCommonUtils::LayeredLayout(In, ColGap, RowGap, FVector2D(OriginX, OriginY), Layout);
+
+    if (GEditor)
+    {
+        GEditor->BeginTransaction(FText::FromString(TEXT("Auto Layout Blueprint Graph")));
+    }
+    TargetGraph->Modify();
+
+    int32 Moved = 0;
+    int32 KnotsInserted = 0;
+    int32 EdgesRewired = 0;
+
+    if (bRebuildRouting)
+    {
+        // Drop every wire sourced by a logic node; knots are removed wholesale below.
+        for (UEdGraphNode* Node : LogicNodes)
+        {
+            for (UEdGraphPin* Pin : Node->Pins)
+            {
+                if (Pin && Pin->Direction == EGPD_Output)
+                {
+                    Pin->BreakAllPinLinks();
+                }
+            }
+        }
+        FUnrealMCPCommonUtils::RemoveStructuralKnots(TargetGraph, Blueprint);
+    }
+
+    // Reposition every logic node to its computed column/row.
+    for (UEdGraphNode* Node : LogicNodes)
+    {
+        const int32* Idx = IndexOf.Find(Node);
+        if (!Idx || !Layout.Positions.IsValidIndex(*Idx)) { continue; }
+        Node->Modify();
+        const int32 NewX = FMath::RoundToInt(Layout.Positions[*Idx].X);
+        const int32 NewY = FMath::RoundToInt(Layout.Positions[*Idx].Y);
+        if (Node->NodePosX != NewX || Node->NodePosY != NewY) { ++Moved; }
+        Node->NodePosX = NewX;
+        Node->NodePosY = NewY;
+    }
+
+    if (bRebuildRouting)
+    {
+        for (int32 e = 0; e < Edges.Num(); ++e)
+        {
+            const TArray<FVector2D>& KnotPath = Layout.EdgeKnots[e];
+            if (FUnrealMCPCommonUtils::ConnectWithKnots(TargetGraph, Edges[e].Src, Edges[e].SrcPin, Edges[e].Dst, Edges[e].DstPin, KnotPath))
+            {
+                ++EdgesRewired;
+                KnotsInserted += KnotPath.Num();
+            }
+        }
+    }
+
+    if (GEditor)
+    {
+        GEditor->EndTransaction();
+    }
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetNumberField(TEXT("node_count"), LogicNodes.Num());
+    ResultObj->SetNumberField(TEXT("moved_nodes"), Moved);
+    ResultObj->SetNumberField(TEXT("knots_inserted"), KnotsInserted);
+    ResultObj->SetNumberField(TEXT("edges_rewired"), EdgesRewired);
+    ResultObj->SetBoolField(TEXT("routing_rebuilt"), bRebuildRouting);
     return ResultObj;
 } 

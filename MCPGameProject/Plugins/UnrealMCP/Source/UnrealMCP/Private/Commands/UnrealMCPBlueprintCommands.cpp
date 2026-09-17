@@ -235,6 +235,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
     }
 
     // Add the component to the blueprint
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
+    }
     USCS_Node* NewNode = Blueprint->SimpleConstructionScript->CreateNode(ComponentClass, *ComponentName);
     if (NewNode)
     {
@@ -783,6 +787,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
     }
 
     // Find the component
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
+    }
     USCS_Node* ComponentNode = nullptr;
     for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
     {
@@ -808,6 +816,11 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
     if (Params->HasField(TEXT("simulate_physics")))
     {
         PrimComponent->SetSimulatePhysics(Params->GetBoolField(TEXT("simulate_physics")));
+    }
+
+    if (Params->HasField(TEXT("gravity_enabled")))
+    {
+        PrimComponent->SetEnableGravity(Params->GetBoolField(TEXT("gravity_enabled")));
     }
 
     if (Params->HasField(TEXT("mass")))
@@ -915,6 +928,11 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSpawnBlueprintActor(c
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
     }
 
+    if (!Blueprint->GeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' has no generated class - compile it first"), *BlueprintName));
+    }
+
     FTransform SpawnTransform;
     SpawnTransform.SetLocation(Location);
     SpawnTransform.SetRotation(FQuat(Rotation));
@@ -1006,6 +1024,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
     }
 
     // Find the component
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
+    }
     USCS_Node* ComponentNode = nullptr;
     for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
     {

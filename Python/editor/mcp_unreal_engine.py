@@ -20,6 +20,14 @@ from typing import Dict, Any, List, Optional
 PORT = 55557
 PROTOCOL_VERSION = "1.3.0"
 
+# The C++ UnrealMCPBridge plugin is the single sanctioned control plane and owns
+# 127.0.0.1:55557. This legacy in-editor Python server used to bind the SAME port
+# (with SO_REUSEADDR), so the two coexisted and either could answer a connection -
+# the C++ bridge even documents this server "silently taking over" after a reload.
+# Keep it disabled so exactly one process owns :55557. Set to True only if you are
+# deliberately running WITHOUT the C++ bridge.
+ENABLE_IN_EDITOR_TCP_SERVER = False
+
 # Server settings
 ENABLE_PYTHON_EXECUTION = True
 MAX_PYTHON_SCRIPT_LENGTH = 100000
@@ -1088,6 +1096,12 @@ def _tick_trampoline(delta_time):
 def start():
     if globals().get("_listener_started"):
         unreal.log_warning("MCP server already running; on_slate_tick reloaded in place.")
+        return
+    if not ENABLE_IN_EDITOR_TCP_SERVER:
+        unreal.log_warning(
+            "In-editor MCP TCP server disabled (ENABLE_IN_EDITOR_TCP_SERVER=False); "
+            "127.0.0.1:55557 is owned by the C++ UnrealMCPBridge. Set the flag in "
+            "mcp_unreal_engine.py to True only to run without the C++ bridge.")
         return
     globals()["_listener_started"] = True
     globals()["_tick_handle"] = unreal.register_slate_post_tick_callback(_tick_trampoline)
