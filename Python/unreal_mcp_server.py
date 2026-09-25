@@ -67,6 +67,7 @@ CONTROL_PLANE_SECRET = "9f2c7a1e5b8d3406af61e9c04d7b2a83f5c1d0e46b9372af8c5d1e6b
 # Configuration
 UNREAL_HOST = "127.0.0.1"
 UNREAL_PORT = 55557
+UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -89,7 +90,7 @@ class UnrealConnection:
             
             logger.info(f"Connecting to Unreal at {UNREAL_HOST}:{UNREAL_PORT}...")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)  # 5 second timeout
+            self.socket.settimeout(UNREAL_TIMEOUT)
             
             # Set socket options for better stability
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
