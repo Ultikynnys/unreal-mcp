@@ -22,6 +22,7 @@
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
 #include "Async/Async.h"
+#include "Containers/Ticker.h"
 // Add Blueprint related includes
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -380,12 +381,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
 
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
     
-    // Create a promise to wait for the result
-    TPromise<FString> Promise;
-    TFuture<FString> Future = Promise.GetFuture();
+    // Create a promise to wait for the result. Held in a TSharedPtr so the dispatch
+    // lambda below stays copyable (FTickerDelegate::CreateLambda needs copyable captures).
+    TSharedPtr<TPromise<FString>> Promise = MakeShared<TPromise<FString>>();
+    TFuture<FString> Future = Promise->GetFuture();
     
-    // Queue execution on Game Thread
-    AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, Promise = MoveTemp(Promise)]() mutable
+    // The work that runs on the game thread and fulfills the promise above.
+    auto DispatchOnGameThread = [this, CommandType, Params, Promise]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
         
@@ -408,7 +410,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     FString BusyString;
                     TSharedRef<TJsonWriter<>> BusyWriter = TJsonWriterFactory<>::Create(&BusyString);
                     FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), BusyWriter);
-                    Promise.SetValue(BusyString);
+                    Promise->SetValue(BusyString);
                     return;
                 }
             }
@@ -452,9 +454,34 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         FString ResultString;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
         FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-        Promise.SetValue(ResultString);
-    });
+        Promise->SetValue(ResultString);
+    };
     
+    // execute_python runs user-supplied code. If that code performs a synchronous asset
+    // import (AssetTools.ImportAssetTasks) or any other task-graph wait, it re-enters the
+    // game-thread task processor. Via AsyncTask the lambda already runs inside that
+    // processor (RecursionGuard == 1), so the re-entry trips
+    // "++Queue(QueueIndex).RecursionGuard == 1" in TaskGraph.cpp and aborts the editor.
+    // Dispatching on the core ticker starts the guard at 0 - the same safe point
+    // HandleImportAsset uses for its deferred import. Every other command keeps AsyncTask
+    // so modal-time commands (e.g. recover_editor) still dispatch while the ticker is paused.
+    if (CommandType == TEXT("execute_python"))
+    {
+        FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda(
+                [DispatchOnGameThread](float) mutable -> bool
+                {
+                    DispatchOnGameThread();
+                    return false; // one-shot
+                }),
+            0.0f);
+    }
+    else
+    {
+        // Queue execution on Game Thread
+        AsyncTask(ENamedThreads::GameThread, MoveTemp(DispatchOnGameThread));
+    }
+
     return Future.Get();
 }
 
