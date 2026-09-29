@@ -74,6 +74,37 @@ namespace
     }
 
     // ---------------------------------------------------------------------
+    // Python pin cleanup for world switches
+    // ---------------------------------------------------------------------
+
+    // World switches (NewLevel / LoadLevel / deleting the open map) tear down the old
+    // world package and GC it. FPyReferenceCollector keeps UObjects alive while Python
+    // still references them, and Public-scope execute_python leaves such references in
+    // __main__ globals, pinning the outgoing world and tripping the "World memory
+    // leaks" ensure (EditorServer.cpp) during the switch. Clear them first.
+    void ClearPythonPinsAndGC()
+    {
+        IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
+        if (PythonPlugin && PythonPlugin->IsPythonAvailable())
+        {
+            FPythonCommandEx Command;
+            Command.Command = TEXT(
+                "import sys, gc\n"
+                "_m = sys.modules.get('__main__')\n"
+                "if _m is not None:\n"
+                "    for _k in [k for k in list(vars(_m)) if not k.startswith('_')]:\n"
+                "        try:\n"
+                "            delattr(_m, _k)\n"
+                "        except Exception:\n"
+                "            pass\n"
+                "gc.collect()\n");
+            Command.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+            Command.FileExecutionScope = EPythonFileExecutionScope::Private;
+            PythonPlugin->ExecPythonCommandEx(Command);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Async asset import jobs (polled via get_import_status)
     // ---------------------------------------------------------------------
 
@@ -934,6 +965,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCreateLevel(const TShare
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Level already exists: %s (set overwrite=true)"), *MapPath));
     }
 
+    // The map switch GCs the outgoing world package; release lingering Python pins
+    // first or the "World memory leaks" ensure can crash the editor (see helper).
+    ClearPythonPinsAndGC();
+
     const bool bUseTemplate = !TemplatePath.IsEmpty() && !TemplatePath.Equals(TEXT("empty"), ESearchCase::IgnoreCase);
     const bool bCreated = bUseTemplate ? Subsystem->NewLevelFromTemplate(MapPath, TemplatePath) : Subsystem->NewLevel(MapPath);
     if (!bCreated)
@@ -998,6 +1033,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleLoadLevel(const TSharedP
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Level editor subsystem unavailable"));
     }
+    // Same world-switch hazard as create_level: clear Python pins first.
+    ClearPythonPinsAndGC();
+
     if (!Subsystem->LoadLevel(MapPath))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load level: %s"), *MapPath));
@@ -1034,6 +1072,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteLevel(const TShare
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Refusing to delete the currently open level (set force=true)"));
     }
+
+    // Deleting the open map unloads its world; release lingering Python pins first
+    // (same "World memory leaks" ensure hazard as create_level / load_level).
+    ClearPythonPinsAndGC();
 
     if (!UEditorAssetLibrary::DeleteAsset(MapPath))
     {
