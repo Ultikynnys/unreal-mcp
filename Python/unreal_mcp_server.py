@@ -68,6 +68,11 @@ CONTROL_PLANE_SECRET = "9f2c7a1e5b8d3406af61e9c04d7b2a83f5c1d0e46b9372af8c5d1e6b
 UNREAL_HOST = "127.0.0.1"
 UNREAL_PORT = 55557
 UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
+# Timeout for a single recv() while awaiting a response. Editor operations run
+# synchronously on the game thread, so a short read timeout abandons an operation
+# that is still running (map loads, batch renames). Keep this generous and separate
+# from the connect timeout above.
+UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -123,7 +128,7 @@ class UnrealConnection:
     def receive_full_response(self, sock, buffer_size=65536) -> bytes:
         """Receive a complete response from Unreal, handling chunked data."""
         chunks = []
-        sock.settimeout(5)  # 5 second timeout
+        sock.settimeout(UNREAL_READ_TIMEOUT)
         try:
             while True:
                 chunk = sock.recv(buffer_size)
@@ -151,7 +156,7 @@ class UnrealConnection:
                     logger.warning(f"Error processing response chunk: {str(e)}")
                     continue
         except socket.timeout:
-            logger.warning("Socket timeout during receive")
+            logger.warning("Socket timeout during receive after %ss", UNREAL_READ_TIMEOUT)
             if chunks:
                 # If we have some data already, try to use it
                 data = b''.join(chunks)
@@ -159,9 +164,14 @@ class UnrealConnection:
                     json.loads(data.decode('utf-8'))
                     logger.info(f"Using partial response after timeout ({len(data)} bytes)")
                     return data
-                except:
+                except Exception:
                     pass
-            raise Exception("Timeout receiving Unreal response")
+            raise Exception(
+                f"No response from Unreal within {UNREAL_READ_TIMEOUT}s. The editor may "
+                f"still be working on this operation - long map loads/saves keep running "
+                f"on the game thread after the read timeout. Check the editor state before "
+                f"retrying, and raise UNREAL_MCP_READ_TIMEOUT if this duration is expected."
+            )
         except Exception as e:
             logger.error(f"Error during receive: {str(e)}")
             raise
@@ -281,23 +291,11 @@ def _get_unreal_connection_unlocked() -> Optional[UnrealConnection]:
                 logger.warning("Could not connect to Unreal Engine")
                 _unreal_connection = None
         else:
-            # Verify connection is still valid with a ping-like test
-            try:
-                # Simple test by sending an empty buffer to check if socket is still connected
-                _unreal_connection.socket.sendall(b'\x00')
-                logger.debug("Connection verified with ping test")
-            except Exception as e:
-                logger.warning(f"Existing connection failed: {e}")
-                _unreal_connection.disconnect()
-                _unreal_connection = None
-                # Try to reconnect
-                _unreal_connection = UnrealConnection()
-                if not _unreal_connection.connect():
-                    logger.warning("Could not reconnect to Unreal Engine")
-                    _unreal_connection = None
-                else:
-                    logger.info("Successfully reconnected to Unreal Engine")
-        
+            # send_command() reconnects for every command (the bridge closes the socket
+            # after each reply), so there is no persistent socket to validate here.
+            # Probing by writing a byte would corrupt the next command's stream.
+            logger.debug("Reusing existing Unreal connection handle")
+
         return _unreal_connection
     except Exception as e:
         logger.error(f"Error getting Unreal connection: {e}")
@@ -339,13 +337,15 @@ from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
+from tools.asset_tools import register_asset_tools
 
 # Register tools
 register_editor_tools(mcp)
 register_blueprint_tools(mcp)
 register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
-register_umg_tools(mcp)  
+register_umg_tools(mcp)
+register_asset_tools(mcp)  
 
 @mcp.prompt()
 def info():

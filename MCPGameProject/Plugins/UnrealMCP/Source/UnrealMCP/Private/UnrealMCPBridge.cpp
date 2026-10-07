@@ -301,6 +301,11 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("get_import_status") ||
         CommandType == TEXT("apply_blueprint_plan") ||
         CommandType == TEXT("get_plan_status") ||
+        CommandType == TEXT("get_job_status") ||
+        CommandType == TEXT("list_redirectors") ||
+        CommandType == TEXT("fixup_redirectors") ||
+        CommandType == TEXT("move_assets") ||
+        CommandType == TEXT("resave_packages") ||
         CommandType == TEXT("recover_editor"))
     {
         return EditorCommands->HandleCommand(CommandType, Params);

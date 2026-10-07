@@ -84,6 +84,17 @@ private:
     // get_plan_status). See HandleApplyBlueprintPlan for the plan schema.
     TSharedPtr<FJsonObject> HandleApplyBlueprintPlan(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetPlanStatus(const TSharedPtr<FJsonObject>& Params);
+
+    // Generic async jobs (polled via get_job_status): asset moves, redirector fixup,
+    // package resaves. See the job registry in UnrealMCPEditorCommands.cpp.
+    TSharedPtr<FJsonObject> HandleGetJobStatus(const TSharedPtr<FJsonObject>& Params);
+
+    // Asset organization
+    TSharedPtr<FJsonObject> HandleListRedirectors(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleFixupRedirectors(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleMoveAssets(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleResavePackages(const TSharedPtr<FJsonObject>& Params);
+
     // Applies up to Budget ops of the job and returns true while work remains
     // (the ticker reschedules itself until false).
     bool RunBlueprintPlanChunk(const FString& JobId, int32 Budget);
