@@ -31,6 +31,12 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 TOOLS_DIR = REPO_ROOT / "Python" / "tools"
 
+# The definition of "a tool" lives in one place (Python/tool_catalog.py): a function
+# decorated with @mcp.tool(). Discovery that keys off "calls send_command" instead
+# also matches commented-out tools and the register_* wrappers, inflating the count.
+sys.path.insert(0, str(REPO_ROOT / "Python"))
+import tool_catalog  # noqa: E402  (path set up above)
+
 FORBIDDEN_OUTER_TYPES = ("Optional", "Union", "Any", "object")
 
 # Parameters that are genuinely polymorphic JSON scalars (a string, number or bool,
@@ -49,33 +55,25 @@ SEND_COMMAND_RE = re.compile(r'send_command\(\s*["\']([a-z0-9_]+)["\']')
 def _iter_tool_defs(module_path: pathlib.Path):
     """Yield (function_name, docstring, params, command) for each MCP tool in a module.
 
-    A tool is a function whose body calls send_command(...); params is a list of
-    (name, annotation_text_or_None).
+    Tool membership comes from tool_catalog (the @mcp.tool() decorator); params is a list
+    of (name, annotation_text_or_None).
     """
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-
-    def walk(node):
-        for child in ast.walk(node):
-            if isinstance(child, ast.FunctionDef):
-                calls = [n for n in ast.walk(child)
-                         if isinstance(n, ast.Call)
-                         and isinstance(n.func, ast.Attribute)
-                         and n.func.attr == "send_command"]
-                if not calls:
-                    continue
-                command = None
-                if calls[0].args and isinstance(calls[0].args[0], ast.Constant):
-                    command = calls[0].args[0].value
-                args = list(child.args.posonlyargs) + list(child.args.args) + list(child.args.kwonlyargs)
-                params = []
-                for a in args:
-                    if a.arg in ("ctx", "self"):
-                        continue
-                    annotation = ast.unparse(a.annotation) if a.annotation else None
-                    params.append((a.arg, annotation))
-                yield child.name, ast.get_docstring(child), params, command
-
-    yield from walk(tree)
+    for _module, child in tool_catalog.iter_decorated_functions(module_path):
+        calls = [n for n in ast.walk(child)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "send_command"]
+        command = None
+        if calls and calls[0].args and isinstance(calls[0].args[0], ast.Constant):
+            command = calls[0].args[0].value
+        args = list(child.args.posonlyargs) + list(child.args.args) + list(child.args.kwonlyargs)
+        params = []
+        for a in args:
+            if a.arg in ("ctx", "self"):
+                continue
+            annotation = ast.unparse(a.annotation) if a.annotation else None
+            params.append((a.arg, annotation))
+        yield child.name, ast.get_docstring(child), params, command
 
 
 def analyze_tools(tools_dir: pathlib.Path) -> dict[str, list[str]]:
