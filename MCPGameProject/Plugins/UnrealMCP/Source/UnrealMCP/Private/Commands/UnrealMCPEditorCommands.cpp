@@ -1553,6 +1553,26 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBatchExecute(const TShar
     ResultObj->SetNumberField(TEXT("count"), Results.Num());
     ResultObj->SetNumberField(TEXT("failures"), Failures);
     ResultObj->SetBoolField(TEXT("rolled_back"), bRolledBack);
+    // A batch with failed sub-actions must not report success, or the caller has to
+    // notice by parsing the per-action results itself.
+    ResultObj->SetBoolField(TEXT("success"), Failures == 0);
+    if (Failures > 0)
+    {
+        TArray<FString> FailedCommands;
+        for (const TSharedPtr<FJsonValue>& Value : Results)
+        {
+            const TSharedPtr<FJsonObject>* Entry = nullptr;
+            if (Value.IsValid() && Value->TryGetObject(Entry) && Entry
+                && (*Entry)->HasField(TEXT("success")) && !(*Entry)->GetBoolField(TEXT("success")))
+            {
+                FailedCommands.Add((*Entry)->GetStringField(TEXT("command")));
+            }
+        }
+        ResultObj->SetStringField(TEXT("error"), FString::Printf(
+            TEXT("%d/%d batch action(s) failed: %s%s"), Failures, Results.Num(),
+            *FString::Join(FailedCommands, TEXT(", ")),
+            bRolledBack ? TEXT(" (batch rolled back)") : TEXT(" (no rollback requested)")));
+    }
     return ResultObj;
 }
 

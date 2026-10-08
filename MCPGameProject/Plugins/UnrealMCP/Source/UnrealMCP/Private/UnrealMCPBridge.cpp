@@ -60,6 +60,9 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "CoreGlobals.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/SWindow.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -398,6 +401,38 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
         
+        // For the duration of this call, treat the engine as an unattended script so any
+        // FMessageDialog/prompt auto-answers its default instead of opening a modal that
+        // would block the game thread (and with it every later request). Restored on every
+        // exit path by TGuardValue.
+        TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+        // ping/reload_server touch no UObjects, and recover_editor is the way OUT of a stuck
+        // modal, so all three stay reachable even while a modal is on screen.
+        const bool bModalExempt = CommandType == TEXT("ping")
+            || CommandType == TEXT("reload_server")
+            || CommandType == TEXT("recover_editor");
+
+        // A modal already on screen cannot be dispatched through: the game thread would block
+        // inside it. Fail fast with an actionable reason instead of stacking behind the modal.
+        if (!bModalExempt)
+        {
+            if (TSharedPtr<SWindow> ActiveModal = FSlateApplication::Get().GetActiveModalWindow())
+            {
+                ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
+                ResponseJson->SetStringField(TEXT("code"), TEXT("EDITOR_MODAL_ACTIVE"));
+                ResponseJson->SetStringField(TEXT("error"), FString::Printf(
+                    TEXT("Editor modal dialog '%s' is open; automation is blocked. Call recover_editor to dismiss it, then retry."),
+                    *ActiveModal->GetTitle().ToString()));
+
+                FString ModalString;
+                TSharedRef<TJsonWriter<>> ModalWriter = TJsonWriterFactory<>::Create(&ModalString);
+                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), ModalWriter);
+                Promise->SetValue(ModalString);
+                return;
+            }
+        }
+
         try
         {
             TSharedPtr<FJsonObject> ResultJson;
@@ -411,6 +446,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 if (!FUnrealMCPCommonUtils::IsObjectLookupSafe(BusyReason))
                 {
                     ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
+                    ResponseJson->SetStringField(TEXT("code"), TEXT("EDITOR_BUSY"));
                     ResponseJson->SetStringField(TEXT("error"),
                         FString::Printf(TEXT("Editor busy: %s. Retry shortly."), *BusyReason));
 
@@ -433,9 +469,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             if (ResultJson->HasField(TEXT("success")))
             {
                 bSuccess = ResultJson->GetBoolField(TEXT("success"));
-                if (!bSuccess && ResultJson->HasField(TEXT("error")))
+                if (!bSuccess)
                 {
-                    ErrorMessage = ResultJson->GetStringField(TEXT("error"));
+                    if (ResultJson->HasField(TEXT("error"))) { ErrorMessage = ResultJson->GetStringField(TEXT("error")); }
+                    else if (ResultJson->HasField(TEXT("message"))) { ErrorMessage = ResultJson->GetStringField(TEXT("message")); }
+                    if (ErrorMessage.IsEmpty()) { ErrorMessage = TEXT("Command failed without a reason; see 'result'"); }
                 }
             }
             
@@ -447,9 +485,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
             else
             {
-                // Set error status and include the error message
+                // Set error status plus the reason AND the handler's own payload, so structured
+                // failure detail (failed paths, per-action results, output log) still reaches the caller.
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
+                ResponseJson->SetObjectField(TEXT("result"), ResultJson);
             }
         }
         catch (const std::exception& e)
