@@ -43,6 +43,22 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(summary, "0/0 checks passed")
 
 
+class DependencyHintTests(unittest.TestCase):
+    """CI ran the battery on a bare interpreter once and failed with a bare traceback; the
+    runner must name the fix when that happens."""
+
+    def test_hint_when_a_check_import_failed(self):
+        tail = 'Traceback (most recent call last):\nModuleNotFoundError: No module named \'mcp\''
+        hint = run_checks.dependency_hint([tail])
+        self.assertIn("uv sync --project Python", hint)
+
+    def test_no_hint_for_an_ordinary_failure(self):
+        self.assertEqual(run_checks.dependency_hint(["AssertionError: 1 != 2"]), "")
+
+    def test_no_hint_when_nothing_failed(self):
+        self.assertEqual(run_checks.dependency_hint([]), "")
+
+
 class CheckListTests(unittest.TestCase):
     def test_every_offline_check_script_exists(self):
         for _label, script, _extra in run_checks.CHECKS:

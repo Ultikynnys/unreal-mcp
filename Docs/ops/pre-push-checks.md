@@ -35,6 +35,14 @@ and a wedged one is killed at 120s as exit 124; both fail closed rather than pas
 `git push --no-verify` skips the hook. Use it knowingly: CI still runs the battery, so a bypass
 turns a local failure into a red build instead of a blocked push.
 
+## CI
+
+`.github/workflows/tool-parity.yml` runs the same battery command, so the two gates cannot drift
+apart. It installs the locked dependencies first (`uv sync --project Python --locked`), because
+two checks import the tool modules and those import `mcp.server.fastmcp`: on a bare interpreter
+they fail with `ModuleNotFoundError`, which is exactly how CI broke the first time the battery
+was wired in. If any check fails to import, the runner prints the command that fixes it.
+
 ## What each check prevents
 
 | Check | Prevents |

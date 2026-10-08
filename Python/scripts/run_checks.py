@@ -57,6 +57,17 @@ LIVE_CHECKS: list[tuple[str, str, tuple[str, ...]]] = [
 TIMEOUT_SECONDS = 120
 OUTPUT_TAIL_LINES = 25
 
+# Printed when a failure looks like a missing import. Two checks import the tool modules (which
+# import mcp.server.fastmcp), so a bare interpreter fails there with a traceback that says
+# nothing about the fix. CI hit exactly this after the battery was wired in.
+DEPENDENCY_HINT = ("a check failed to import something: install the dependencies with "
+                   "'uv sync --project Python' before running the battery")
+
+
+def dependency_hint(tails: list[str]) -> str:
+    """The hint to print when any failure output looks like a missing import, else ''."""
+    return DEPENDENCY_HINT if any("ModuleNotFoundError" in tail for tail in tails) else ""
+
 
 def summarize(results: list[tuple[str, int]]) -> tuple[int, str]:
     """(exit_code, one-line summary) for a list of (label, returncode)."""
@@ -119,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     for name, code, tail in details:
         print(f"\n--- {name} failed (exit {code}) ---")
         print(tail or "(no output)")
+
+    hint = dependency_hint([tail for _name, _code, tail in details])
+    if hint:
+        print(f"\nhint: {hint}")
 
     code, summary = summarize(results)
     print(f"\n{summary}")

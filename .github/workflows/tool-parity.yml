@@ -7,6 +7,10 @@ name: tool-parity
 #
 # CI runs the SAME battery as the local pre-push hook (Python/scripts/run_checks.py),
 # so the two gates cannot drift apart. See Docs/ops/pre-push-checks.md.
+#
+# The dependencies must be installed: two checks import the tool modules, which import
+# mcp.server.fastmcp, so a bare interpreter fails with ModuleNotFoundError. That is why this
+# workflow used to run only the parity checker, which parses source without importing it.
 
 on:
   push:
@@ -34,12 +38,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
+
+      - name: Install the Python dependencies from the lock
+        run: uv sync --project Python --locked
 
       - name: Run the check battery
         # The runner's own unit test is part of the battery, so it reports a broken checker
         # as such rather than as a false failure of the tree.
-        run: python Python/scripts/run_checks.py
+        run: uv run --project Python python Python/scripts/run_checks.py
