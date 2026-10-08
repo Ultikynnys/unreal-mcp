@@ -2026,9 +2026,17 @@ namespace
                 ObjectTools::ForceReplaceReferences(Destination, Olds);
                 for (UPackage* Loaded : LoadedReferencers)
                 {
-                    if (!UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false))
+                    const FString ReferencerName = Loaded ? Loaded->GetName() : FString();
+                    UWorld* ReferencerWorld = Loaded ? UWorld::FindWorldInPackage(Loaded) : nullptr;
+                    // A map cannot be written through the asset save path: saving it as an asset
+                    // silently leaves its old import on disk, which is how dangling refs appear.
+                    const bool bSavedReferencer = ReferencerWorld
+                        ? (ReferencerWorld->PersistentLevel
+                            && FEditorFileUtils::SaveLevel(ReferencerWorld->PersistentLevel, ReferencerName))
+                        : (Loaded && UEditorAssetLibrary::SaveLoadedAsset(Loaded, false));
+                    if (!bSavedReferencer)
                     {
-                        Error = TEXT("Referencer package failed to save: ") + Loaded->GetName();
+                        Error = TEXT("Referencer package failed to save: ") + ReferencerName;
                         return false;
                     }
                 }
