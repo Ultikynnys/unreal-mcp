@@ -65,6 +65,7 @@
 #include "UObject/ObjectResource.h"
 #include "UObject/UObjectHash.h"
 #include "PackageTools.h"
+#include "HAL/PlatformFileManager.h"
 
 namespace
 {
@@ -2144,6 +2145,85 @@ namespace
         return Resaved;
     }
 
+    // A move empties its source folder, and UE hides a folder that holds no assets (the Content
+    // Browser is asset-driven), so the shell stays on disk with a stale registry path and nothing
+    // shows it. Delete a directory only when it holds no file at all: that cannot lose data.
+    bool RemoveEmptyFolder(const FString& Folder, bool& bRemoved, FString& Error)
+    {
+        bRemoved = false;
+        FString LocalPath;
+        if (!FPackageName::TryConvertLongPackageNameToFilename(Folder, LocalPath))
+        {
+            Error = TEXT("Cannot resolve folder on disk: ") + Folder;
+            return false;
+        }
+        IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+        if (PlatformFile.DirectoryExists(*LocalPath))
+        {
+            bool bHasFile = false;
+            PlatformFile.IterateDirectoryRecursively(*LocalPath, [&bHasFile](const TCHAR*, bool bIsDirectory)
+            {
+                bHasFile |= !bIsDirectory;
+                return true;
+            });
+            if (bHasFile) { return true; } // not ours to delete
+            PlatformFile.DeleteDirectoryRecursively(*LocalPath);
+            if (PlatformFile.DirectoryExists(*LocalPath))
+            {
+                Error = TEXT("Empty folder could not be removed: ") + Folder;
+                return false;
+            }
+            bRemoved = true;
+        }
+        IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+        TArray<FString> SubPaths;
+        AR.GetSubPaths(Folder, SubPaths, /*bInRecurse=*/true);
+        SubPaths.Sort([](const FString& A, const FString& B) { return A.Len() > B.Len(); });
+        for (const FString& SubPath : SubPaths) { AR.RemovePath(SubPath); }
+        AR.RemovePath(Folder);
+        return true;
+    }
+
+    // Source directories of a batch, deepest first so a nested tree collapses bottom-up. The mount
+    // root is never a candidate: a move must not delete /Game itself.
+    void RemoveEmptiedSourceFolders(const TSharedPtr<FMcpJobState>& Job, const TArray<FString>& MovedSources)
+    {
+        TSet<FString> Candidates;
+        for (const FString& Source : MovedSources)
+        {
+            FString Directory = FPackageName::GetLongPackagePath(Source);
+            while (Directory.Len() > 1 && Directory != TEXT("/Game") && Directory != TEXT("/Engine"))
+            {
+                Candidates.Add(Directory);
+                const FString Parent = FPackageName::GetLongPackagePath(Directory);
+                if (Parent == Directory) { break; }
+                Directory = Parent;
+            }
+        }
+        TArray<FString> Ordered = Candidates.Array();
+        Ordered.Sort([](const FString& A, const FString& B) { return A.Len() > B.Len(); });
+        TArray<FString> Removed;
+        for (const FString& Folder : Ordered)
+        {
+            bool bRemoved = false;
+            FString Error;
+            if (!RemoveEmptyFolder(Folder, bRemoved, Error))
+            {
+                Job->State = TEXT("failed");
+                const FString Detail = TEXT("empty-folder cleanup: ") + Error;
+                Job->Error = Job->Error.IsEmpty() ? Detail : Job->Error + TEXT("; ") + Detail;
+                Job->Items.Add(Detail);
+                return;
+            }
+            if (bRemoved) { Removed.Add(Folder); }
+        }
+        if (Removed.Num() > 0)
+        {
+            Job->Items.Add(FString::Printf(TEXT("removed %d emptied source folder(s): %s"),
+                Removed.Num(), *FString::Join(Removed, TEXT(", "))));
+        }
+    }
+
     // Runs the sweep above and records it in the job's items. Called when a move batch finishes,
     // from whichever completion path the batch took (verified fixup, or fixup disabled).
     void RecordResaveSweep(const TSharedPtr<FMcpJobState>& Job, const TArray<FString>& MovedSources)
@@ -2160,6 +2240,7 @@ namespace
             Job->Error = TEXT("resave sweep: ") + SweepError;
             Job->Items.Add(Job->Error);
         }
+        RemoveEmptiedSourceFolders(Job, MovedSources);
     }
 
     bool NormalizeAssetPackage(const FString& Input, FString& Package)
