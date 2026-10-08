@@ -9,6 +9,7 @@ import os
 import pathlib
 import re
 import socket
+import subprocess
 import sys
 import json
 import threading
@@ -75,81 +76,77 @@ UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
 # from the connect timeout above.
 UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
 
-# --- Protocol version -------------------------------------------------------
-# The C++ bridge stamps MCP_PROTOCOL_VERSION onto every reply. This header is the single
-# source of truth for that value, read from disk here so the plugin and the server cannot
-# be edited apart. A mismatch means the running editor was not rebuilt after the contract
-# changed, and no call can be trusted.
-PLUGIN_VERSION_HEADER = (
-    pathlib.Path(_SERVER_DIR).parent / "MCPGameProject" / "Plugins" / "UnrealMCP"
-    / "Source" / "UnrealMCP" / "Public" / "MCPProtocolVersion.h"
-)
+# --- Revision handshake -----------------------------------------------------
+# Identity is the commit, not a hand-incremented number: the plugin bakes in the commit it was
+# BUILT from (UnrealMCP.Build.cs -> MCP_REVISION) and this server uses the commit it runs from,
+# so any drift between the two is a mismatch and nobody has to remember to bump a constant. The
+# checkout is assumed to be a git repository.
+REPO_ROOT = pathlib.Path(_SERVER_DIR).parent
 
 
-def read_expected_protocol(header_path: pathlib.Path) -> str:
-    """The contract version this server requires, read from the plugin header."""
+def repo_revision() -> str:
+    """The commit this server runs from. UNREAL_MCP_REVISION wins, for a packaged or copied tree."""
+    override = os.getenv("UNREAL_MCP_REVISION")
+    if override:
+        return override.strip()
     try:
-        text = header_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.error("Could not read the git revision: %s", error)
         return ""
-    match = re.search(r'#define\s+MCP_PROTOCOL_VERSION\s+TEXT\("([^"]+)"\)', text)
-    return match.group(1) if match else ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def protocol_mismatch_error(expected: str, reported: str) -> str:
-    """'' when the versions agree, otherwise the actionable refusal message.
+REPO_REVISION = repo_revision()
 
-    Fails closed in both directions: a different version, and no version at all (a plugin
-    built before the handshake existed). An unreadable header cannot be verified against,
-    so the check is skipped and the reason is logged at startup.
+_dirty_warned = False
+
+
+def _warn_built_dirty_once(revision: str) -> None:
+    """A dirty build's commit does not identify the code it runs; say so once per process."""
+    global _dirty_warned
+    if not _dirty_warned:
+        _dirty_warned = True
+        logger.warning(
+            "The running plugin was built from a dirty tree (revision %s), so its revision does "
+            "not identify the code it is running; rebuild from a clean tree before trusting it",
+            revision or "unknown")
+
+
+def revision_mismatch_error(reported: str) -> str:
+    """'' when the running plugin was built from this revision, otherwise the refusal.
+
+    Three refusals, all fail-closed: a different commit, no revision field at all (a plugin
+    built before the handshake), and "unknown" (a plugin built where git was unavailable).
     """
-    if not expected:
+    if not REPO_REVISION:
+        return (
+            "Unreal MCP revision unknown: this server cannot tell which commit it is running "
+            "from (no git, or not a checkout). Set UNREAL_MCP_REVISION to the shipped revision, "
+            "or run the server from a git checkout; every call fails until the two sides can be "
+            "compared."
+        )
+    if reported == REPO_REVISION:
         return ""
-    if reported == expected:
-        return ""
-    if reported:
-        detail = f"this server speaks protocol {expected}, the editor reports {reported}"
+    if not reported:
+        detail = ("the running Unreal plugin reported no revision at all, so it was built before "
+                  "the handshake existed")
+    elif reported == "unknown":
+        detail = ("the running Unreal plugin was built without a revision (git unavailable at "
+                  "build time, or MCP_REVISION unset)")
     else:
-        detail = (f"the running Unreal plugin reported no protocol version at all, so it was "
-                  f"built before the handshake; this server speaks protocol {expected}")
+        detail = f"the running plugin reports {reported}"
     return (
-        f"Unreal plugin version mismatch: {detail}. The running plugin is stale: rebuild it "
-        f"and restart the editor before calling again. Rebuild with "
+        f"Unreal MCP revision mismatch: this checkout is {REPO_REVISION}, {detail}. The running "
+        f"plugin is stale: rebuild it and restart the editor before calling again. Rebuild with "
         f'"<UE>\\Engine\\Build\\BatchFiles\\Build.bat" MCPGameProjectEditor Win64 Development '
         f'"MCPGameProject/MCPGameProject.uproject" -WaitMutex, then run '
         f"`uv run --project Python python Python/scripts/editor_process.py restart`. "
         f"Every call fails until the plugin matches; retrying the same call will not help."
     )
-
-
-def protocol_agreement_error(server_version: str, header_version: str, reported_version: str) -> str:
-    """'' only when the Python server, the plugin source and the loaded plugin all agree.
-
-    Three sides, one contract: this server declares SERVER_PROTOCOL, the plugin source
-    declares MCP_PROTOCOL_VERSION in the header, and the running plugin reports what it was
-    compiled with. Comparing the header to the plugin alone would only catch a stale plugin;
-    a Python server from a different revision than the plugin source would pass, because it
-    has nothing of its own to disagree with. Both directions are refused here.
-    """
-    if header_version and header_version != server_version:
-        return (
-            f"Unreal MCP protocol drift in this checkout: the Python server speaks protocol "
-            f"{server_version}, the plugin source (MCPProtocolVersion.h) declares "
-            f"{header_version}, and the loaded plugin reports "
-            f"{reported_version or 'no version'}. The repository and the plugin source are from "
-            f"different revisions: update the checkout, then rebuild the plugin and restart the "
-            f"editor (Build.bat MCPGameProjectEditor Win64 Development <uproject>, then "
-            f"`uv run --project Python python Python/scripts/editor_process.py restart`) so all "
-            f"three agree. Every call fails until they do.")
-    return protocol_mismatch_error(server_version, reported_version)
-
-
-# The version THIS Python server speaks. It must equal MCP_PROTOCOL_VERSION in the plugin
-# header; the two are one contract declared on both sides, so drift in EITHER direction is
-# caught at runtime rather than only by a test.
-SERVER_PROTOCOL = "2"
-
-HEADER_PROTOCOL = read_expected_protocol(PLUGIN_VERSION_HEADER)
 
 
 def _failure_detail(response: Dict[str, Any]) -> str:
@@ -332,14 +329,11 @@ class UnrealConnection:
                 pass
             self.socket = None
 
-    def _probe_protocol(self) -> str:
-        """The protocol version the editor reports, or '' when it reports none.
-
-        `ping` touches no UObjects, so it is the safe handshake. It raises if the editor
-        cannot be reached: a dead editor is a connection problem, not a version problem.
-        """
+    def _probe_reply(self) -> Dict[str, Any]:
+        """The `ping` reply, used as the handshake: it touches no UObjects. It raises if the
+        editor cannot be reached - a dead editor is a connection problem, not drift."""
         reply = self._dispatch("ping")
-        return str(reply.get("protocol") or "") if isinstance(reply, dict) else ""
+        return reply if isinstance(reply, dict) else {}
 
     def _send_command_unlocked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """Send a command to Unreal Engine and get the response (caller holds _connection_lock)."""
@@ -349,23 +343,25 @@ class UnrealConnection:
             # create or delete assets while we merely refused to report the result. Probe
             # with a ping (which changes nothing) and refuse before dispatching anything.
             if command != "ping":
-                mismatch = protocol_agreement_error(
-                    SERVER_PROTOCOL, HEADER_PROTOCOL, self._probe_protocol())
+                probe = self._probe_reply()
+                mismatch = revision_mismatch_error(str(probe.get("revision") or ""))
                 if mismatch:
                     logger.error("Refusing '%s' before dispatch: %s", command, mismatch)
                     return {"success": False, "result": None, "message": mismatch,
-                            "code": "PROTOCOL_MISMATCH"}
+                            "code": "REVISION_MISMATCH"}
 
             response = self._dispatch(command, params)
 
             # Belt and braces: a reply that disagrees with the handshake is refused too, in
             # case the editor was swapped for a different build between the two round trips.
-            reported = response.get("protocol") if isinstance(response, dict) else None
-            mismatch = protocol_agreement_error(SERVER_PROTOCOL, HEADER_PROTOCOL, str(reported or ""))
+            reported = str(response.get("revision") or "") if isinstance(response, dict) else ""
+            mismatch = revision_mismatch_error(reported)
             if mismatch:
                 logger.error("Refusing command '%s': %s", command, mismatch)
                 return {"success": False, "result": None, "message": mismatch,
-                        "code": "PROTOCOL_MISMATCH"}
+                        "code": "REVISION_MISMATCH"}
+            if isinstance(response, dict) and response.get("built_dirty"):
+                _warn_built_dirty_once(reported)
 
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
@@ -435,17 +431,11 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
-    logger.info("This server speaks protocol %s; MCPProtocolVersion.h declares %s",
-                SERVER_PROTOCOL, HEADER_PROTOCOL or "UNREADABLE")
-    if not HEADER_PROTOCOL:
-        # The plugin-side check still runs (against SERVER_PROTOCOL); only checkout drift
-        # detection needs the header.
-        logger.warning("Could not read %s: checkout/plugin-source drift cannot be detected, "
-                       "but the loaded plugin is still checked against %s",
-                       PLUGIN_VERSION_HEADER, SERVER_PROTOCOL)
-    elif HEADER_PROTOCOL != SERVER_PROTOCOL:
-        logger.error("Protocol drift in this checkout: server %s vs header %s",
-                     SERVER_PROTOCOL, HEADER_PROTOCOL)
+    logger.info("This server runs from revision %s", REPO_REVISION or "UNKNOWN (no git checkout)")
+    if not REPO_REVISION:
+        logger.warning("Cannot determine this server's revision. Set UNREAL_MCP_REVISION, or run "
+                       "from a git checkout: every call is refused until the plugin and this side "
+                       "can be compared.")
     try:
         _unreal_connection = get_unreal_connection()
         if _unreal_connection:

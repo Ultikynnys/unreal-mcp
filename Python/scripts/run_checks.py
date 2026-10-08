@@ -38,7 +38,7 @@ CHECKS: list[tuple[str, str, tuple[str, ...]]] = [
     ("agent-facing docs", "test_agent_docs.py", ()),
     ("tool surface typing", "test_tool_surface.py", ()),
     ("docs <-> tools parity", "test_docs_parity.py", ()),
-    ("protocol version agreement", "test_protocol_version.py", ()),
+    ("revision agreement", "test_revision_handshake.py", ()),
     ("modal + failure guards", "test_modal_and_failure_guards.py", ()),
     ("editor lifecycle helpers", "test_editor_process.py", ()),
     ("asset tool wrappers", "test_asset_tools.py", ()),

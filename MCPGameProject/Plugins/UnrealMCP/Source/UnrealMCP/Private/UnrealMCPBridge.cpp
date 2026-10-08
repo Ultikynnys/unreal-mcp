@@ -61,7 +61,7 @@
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "MCPStateSnapshot.h"
-#include "MCPProtocolVersion.h"
+#include "MCPBuildRevision.h"
 #include "CoreGlobals.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -72,6 +72,11 @@
 
 namespace
 {
+    // A game thread that has not ticked for this long is genuinely stuck (a blocking modal, a long
+    // save). Below it the editor is merely busy and still answers calls, which is why the refusal
+    // keys off this rather than off the presence of a window.
+    constexpr double MCP_EDITOR_STALLED_SECONDS = 15.0;
+
     // Shared secret: the sanctioned server (Python/unreal_mcp_server.py, CONTROL_PLANE_SECRET)
     // presents it on every command; a request without it is refused and handed the control-plane
     // instructions. Keep it byte-for-byte identical to the Python side.
@@ -402,15 +407,16 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     auto DispatchOnGameThread = [this, CommandType, Params, Promise]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
-        // Stamp the contract version on EVERY reply (success, error, modal/busy refusals) so a stale
-        // plugin is detectable on any call, not just a get_capabilities probe. The server reads
-        // MCP_PROTOCOL_VERSION from the same header and fails closed on a mismatch.
-        ResponseJson->SetStringField(TEXT("protocol"), MCP_PROTOCOL_VERSION);
+        // Stamp the revision this plugin was BUILT from on EVERY reply (success, error, refusals):
+        // the server refuses a call when its own checkout is on a different commit, so a stale
+        // plugin is detectable on any call, not only a get_capabilities probe.
+        ResponseJson->SetStringField(TEXT("revision"), MCP_REVISION);
+        ResponseJson->SetBoolField(TEXT("built_dirty"), MCP_REVISION_DIRTY != 0);
         
-        // For this call, treat the engine as an unattended script so any FMessageDialog/prompt
-        // auto-answers its default instead of opening a modal that would block the game thread (and
-        // with it every later request). TGuardValue restores it on every exit path.
+        // Unattended: an engine prompt auto-answers instead of blocking the game thread, and
+        // GIsSilent suppresses the slow-task progress window that used to refuse every later call.
         TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+        TGuardValue<bool> SilentGuard(GIsSilent, true);
 
         // The snapshot is written by a thread that is NOT the game thread, so it keeps
         // moving while this call blocks the game thread - that is what makes a stuck
@@ -423,19 +429,38 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             || CommandType == TEXT("reload_server")
             || CommandType == TEXT("recover_editor");
 
-        // A modal already on screen cannot be dispatched through: the game thread would block
-        // inside it. Fail fast with an actionable reason instead of stacking behind the modal.
+        // Refuse on LIVENESS, not on a window's presence: a progress window leaves the thread
+        // ticking and must be dispatched through; a modal that really blocks stops the heartbeat,
+        // and only then do we refuse, naming the window so the caller knows what to dismiss.
         if (!bModalExempt)
         {
-            if (TSharedPtr<SWindow> ActiveModal = FSlateApplication::Get().GetActiveModalWindow())
+            const double StalledSeconds = FMCPStateSnapshot::Get().GetGameThreadStalledSeconds();
+            if (StalledSeconds > MCP_EDITOR_STALLED_SECONDS)
             {
+                const bool bModalOpen = FSlateApplication::Get().GetActiveModalWindow().IsValid();
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
-                ResponseJson->SetStringField(TEXT("code"), TEXT("EDITOR_MODAL_ACTIVE"));
-                ResponseJson->SetStringField(TEXT("error"), FString::Printf(
-                    TEXT("Editor modal dialog '%s' is open; automation is blocked. Call recover_editor to dismiss it, then retry."),
-                    *ActiveModal->GetTitle().ToString()));
+                ResponseJson->SetStringField(TEXT("code"),
+                    bModalOpen ? TEXT("EDITOR_MODAL_ACTIVE") : TEXT("EDITOR_BLOCKED"));
+                ResponseJson->SetStringField(TEXT("error"), bModalOpen
+                    ? FString::Printf(TEXT("Editor modal '%s' (title '%s') is holding the game thread: no tick for %.0fs. "
+                        "Call recover_editor to dismiss it, then retry."),
+                        *FMCPStateSnapshot::Get().GetModalClass(),
+                        *FMCPStateSnapshot::Get().GetModalTitle(), StalledSeconds)
+                    : FString::Printf(TEXT("Editor game thread has not ticked for %.0fs (a long operation is "
+                        "running); this call was not run. Retry shortly."), StalledSeconds));
 
-                FMCPStateSnapshot::Get().MarkRefused(CommandType, TEXT("EDITOR_MODAL_ACTIVE"));
+                // Carry the state, so a refused caller is not blind: how stuck the thread is, which
+                // window is up, and the threshold that decided it.
+                TSharedPtr<FJsonObject> StateJson = MakeShared<FJsonObject>();
+                StateJson->SetNumberField(TEXT("game_thread_stalled_seconds"), StalledSeconds);
+                StateJson->SetNumberField(TEXT("stalled_threshold_seconds"), MCP_EDITOR_STALLED_SECONDS);
+                StateJson->SetStringField(TEXT("modal_class"), FMCPStateSnapshot::Get().GetModalClass());
+                StateJson->SetStringField(TEXT("modal_title"), FMCPStateSnapshot::Get().GetModalTitle());
+                StateJson->SetStringField(TEXT("in_flight_command"), FMCPStateSnapshot::Get().GetInFlightCommand());
+                ResponseJson->SetObjectField(TEXT("state"), StateJson);
+
+                FMCPStateSnapshot::Get().MarkRefused(CommandType,
+                    bModalOpen ? TEXT("EDITOR_MODAL_ACTIVE") : TEXT("EDITOR_BLOCKED"));
 
                 FString ModalString;
                 TSharedRef<TJsonWriter<>> ModalWriter = TJsonWriterFactory<>::Create(&ModalString);

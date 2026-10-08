@@ -100,18 +100,48 @@ void FMCPStateSnapshot::Stop()
 bool FMCPStateSnapshot::TickGameThread(float /*DeltaSeconds*/)
 {
     FString ModalTitle;
+    FString ModalClass;
     if (FSlateApplication::IsInitialized())
     {
         if (TSharedPtr<SWindow> Modal = FSlateApplication::Get().GetActiveModalWindow())
         {
             ModalTitle = Modal->GetTitle().ToString();
+            // The widget type is the discriminating detail: a slow-task progress window and a
+            // prompt both report an empty title, so only the type says which one is up.
+            // GetContent() hands back a TSharedRef, so there is nothing to null-check.
+            ModalClass = Modal->GetContent()->GetType().ToString();
         }
     }
 
     FScopeLock Lock(&Mutex);
     Snapshot.LastGameThreadTickSeconds = FPlatformTime::Seconds();
     Snapshot.ModalTitle = ModalTitle;
+    Snapshot.ModalClass = ModalClass;
     return bRunning; // keep ticking while running
+}
+
+double FMCPStateSnapshot::GetGameThreadStalledSeconds()
+{
+    FScopeLock Lock(&Mutex);
+    return FMath::Max(0.0, FPlatformTime::Seconds() - Snapshot.LastGameThreadTickSeconds);
+}
+
+FString FMCPStateSnapshot::GetModalClass()
+{
+    FScopeLock Lock(&Mutex);
+    return Snapshot.ModalClass;
+}
+
+FString FMCPStateSnapshot::GetModalTitle()
+{
+    FScopeLock Lock(&Mutex);
+    return Snapshot.ModalTitle;
+}
+
+FString FMCPStateSnapshot::GetInFlightCommand()
+{
+    FScopeLock Lock(&Mutex);
+    return Snapshot.Command;
 }
 
 void FMCPStateSnapshot::MarkDispatchBegin(const FString& Command)
@@ -142,7 +172,7 @@ void FMCPStateSnapshot::MarkRefused(const FString& Command, const FString& Reaso
 
 void FMCPStateSnapshot::WriteSnapshot()
 {
-    FString State, Command, LastCommand, LastError, ModalTitle, StartedAt;
+    FString State, Command, LastCommand, LastError, ModalTitle, ModalClass, StartedAt;
     double CommandStart = 0.0, LastCommandSeconds = 0.0, LastTick = 0.0;
     {
         FScopeLock Lock(&Mutex);
@@ -153,6 +183,7 @@ void FMCPStateSnapshot::WriteSnapshot()
         LastCommandSeconds = Snapshot.LastCommandSeconds;
         LastError = Snapshot.LastError;
         ModalTitle = Snapshot.ModalTitle;
+        ModalClass = Snapshot.ModalClass;
         StartedAt = Snapshot.StartedAt;
         LastTick = Snapshot.LastGameThreadTickSeconds;
     }
@@ -172,6 +203,7 @@ void FMCPStateSnapshot::WriteSnapshot()
     Json->SetNumberField(TEXT("last_command_seconds"), LastCommandSeconds);
     Json->SetStringField(TEXT("last_error"), LastError);
     Json->SetStringField(TEXT("modal_title"), ModalTitle);
+    Json->SetStringField(TEXT("modal_class"), ModalClass);
     Json->SetNumberField(TEXT("game_thread_stalled_seconds"), Stalled);
 
     FString Serialized;

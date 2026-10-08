@@ -45,7 +45,7 @@
 #include "Misc/Guid.h"
 #include "UObject/ObjectRedirector.h"
 #include "ObjectTools.h"
-#include "MCPProtocolVersion.h"
+#include "MCPBuildRevision.h"
 #include "Misc/PackageName.h"
 #include "UObject/StrongObjectPtr.h"
 #include "AssetToolsModule.h"
@@ -532,7 +532,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRecoverEditor(const TSha
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
 {
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-    ResultObj->SetStringField(TEXT("protocol_version"), MCP_PROTOCOL_VERSION);
+    ResultObj->SetStringField(TEXT("revision"), MCP_REVISION);
+    ResultObj->SetBoolField(TEXT("built_dirty"), MCP_REVISION_DIRTY != 0);
     ResultObj->SetStringField(TEXT("plugin"), TEXT("UnrealMCP"));
     ResultObj->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
 
@@ -1895,6 +1896,56 @@ namespace
         return false;
     }
 
+    // A package moved in the same batch as its dependency can stay saved with the old import: the
+    // in-memory rewire never re-saves it (observed live on MI_SchemePickup). Loading and saving the
+    // referencers the registry still reports rewrites them; one registry query per move otherwise.
+    int32 ResaveStaleReferencers(const TArray<FString>& MovedSources, FString& OutError)
+    {
+        FAssetRegistryModule& AssetRegistryModule =
+            FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+        IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+        int32 Resaved = 0;
+        TSet<FString> Handled;
+        for (const FString& Source : MovedSources)
+        {
+            AssetRegistry.WaitForPackage(Source);
+            TArray<FName> Referencers;
+            AssetRegistry.GetReferencers(FName(*Source), Referencers);
+            for (const FName& Referencer : Referencers)
+            {
+                const FString Name = Referencer.ToString();
+                if (Handled.Contains(Name)) { continue; }
+                Handled.Add(Name);
+
+                UObject* Loaded = UEditorAssetLibrary::LoadAsset(Name);
+                if (!Loaded) { continue; } // gone, or never loadable: nothing to write
+                if (UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false))
+                {
+                    ++Resaved;
+                }
+                else
+                {
+                    OutError = FString::Printf(TEXT("%s could not be re-saved"), *Name);
+                }
+            }
+        }
+        return Resaved;
+    }
+
+    // Runs the sweep above and records it in the job's items. Called when a move batch finishes,
+    // from whichever completion path the batch took (verified fixup, or fixup disabled).
+    void RecordResaveSweep(const TSharedPtr<FMcpJobState>& Job, const TArray<FString>& MovedSources)
+    {
+        FString SweepError;
+        const int32 Resaved = ResaveStaleReferencers(MovedSources, SweepError);
+        if (Resaved > 0)
+        {
+            Job->Items.Add(FString::Printf(TEXT("resaved %d package(s) still importing a moved path"), Resaved));
+        }
+        if (!SweepError.IsEmpty()) { Job->Items.Add(TEXT("resave sweep: ") + SweepError); }
+    }
+
     bool NormalizeAssetPackage(const FString& Input, FString& Package)
     {
         Package = Input.TrimStartAndEnd();
@@ -2177,7 +2228,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
             *VerificationStarted = 0.0;
             Job->Items.Add(Request.Source + TEXT(" -> ") + Destination + TEXT(": saved, redirector cleanup verified"));
             Job->Done++;
-            return Job->Done < Pending->Num();
+            if (Job->Done < Pending->Num()) { return true; }
+
+            // The batch is finished: resave anything still importing a moved path (see
+            // ResaveStaleReferencers for why that is needed at all).
+            TArray<FString> MovedSources;
+            MovedSources.Reserve(Pending->Num());
+            for (const auto& Moved : *Pending) { MovedSources.Add(Moved.Source); }
+            RecordResaveSweep(Job, MovedSources);
+            return false;
         }
         if (PackageOccupied(Destination)) { return Fail(TEXT("Destination became occupied")); }
         TStrongObjectPtr<UObject> Asset(UEditorAssetLibrary::LoadAsset(Request.Source));
@@ -2202,7 +2261,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
         Job->Items.Add(FString::Printf(TEXT("%s -> %s: %s"), *Request.Source, *Destination, bFixup ? TEXT("saved, redirector cleanup verified") : TEXT("saved, redirector cleanup disabled")));
         Job->Done++;
         Job->Phase = FString::Printf(TEXT("%d/%d assets"), Job->Done, Job->Total);
-        return Job->Done < Pending->Num();
+        if (Job->Done < Pending->Num()) { return true; }
+
+        // The batch is finished: the same resave sweep as the verified path above. A folder move
+        // (fixup disabled) lands here, and it is the path that moved Haeretica's 257 hint textures.
+        TArray<FString> MovedSources;
+        MovedSources.Reserve(Pending->Num());
+        for (const auto& Moved : *Pending) { MovedSources.Add(Moved.Source); }
+        RecordResaveSweep(Job, MovedSources);
+        return false;
     });
     Result->SetStringField(TEXT("job_id"), JobId);
     Result->SetStringField(TEXT("state"), TEXT("queued"));

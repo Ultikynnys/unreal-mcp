@@ -30,6 +30,22 @@ public:
     /** Refusal paths (modal active / editor busy) also record what happened. */
     void MarkRefused(const FString& Command, const FString& Reason);
 
+    // Readers for the bridge's pre-flight. Locked, so they are callable from the server thread
+    // while the game thread is stuck inside a modal.
+
+    /** Seconds since the game thread last ticked (0 until the first tick). */
+    double GetGameThreadStalledSeconds();
+
+    /** Widget type of the modal window on screen ('' when none): the part that tells a progress
+     *  window apart from a prompt, since both have an empty title. */
+    FString GetModalClass();
+
+    /** Title of the modal window on screen ('' when none). */
+    FString GetModalTitle();
+
+    /** Command currently being dispatched ('' when idle). */
+    FString GetInFlightCommand();
+
 private:
     FMCPStateSnapshot() = default;
 
@@ -50,6 +66,7 @@ private:
         double LastCommandSeconds = 0.0;
         FString LastError;
         FString ModalTitle;
+        FString ModalClass;
         double LastGameThreadTickSeconds = 0.0;
         FString StartedAt;
     };
