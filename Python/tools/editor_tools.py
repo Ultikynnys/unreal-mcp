@@ -835,4 +835,78 @@ def register_editor_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def console_command(ctx: Context, command: str) -> Dict[str, Any]:
+        """Run an allowlisted console command in the editor (stat/show/scalability/viewmodes).
+
+        Allowed: stat *, show *, r.*, sg.*, foliage.*, grass.*, t.MaxFPS, HighResShot.
+        Mutating commands (exec, quit, gunit, Log off) are refused. Output goes to the
+        editor log; the reply reports whether the editor marked the command handled.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("console_command", {"command": command})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def editor_play(ctx: Context) -> Dict[str, Any]:
+        """Start Play-In-Editor on the current map (in-process).
+
+        Returns state 'requested' (PIE starts on the next editor tick), 'already_playing',
+        or an error. Pair with capture_pie_screenshot and editor_stop for an automated
+        verify loop. PIE start can take a few seconds; poll editor_play again or check
+        get_current_level afterwards.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("editor_play", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def editor_stop(ctx: Context) -> Dict[str, Any]:
+        """Stop the running Play-In-Editor session.
+
+        Returns state 'stopping' (PIE ends on the next editor tick) or 'not_playing'.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("editor_stop", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def list_levels(ctx: Context) -> Dict[str, Any]:
+        """List all map (World) assets in /Game with their object paths."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("list_levels", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_current_level(ctx: Context) -> Dict[str, Any]:
+        """Get the currently open level: name, package path, and dirty state."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("get_current_level", {})
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

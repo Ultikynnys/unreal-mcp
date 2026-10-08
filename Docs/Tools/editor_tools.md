@@ -104,6 +104,48 @@ print(screenshot_response)
 - **Actor not found**: Verify that the actor name is correct and the actor exists in the current level.
 - **Invalid parameters**: Ensure that location and orientation arrays contain exactly 3 values (X, Y, Z for location; Pitch, Yaw, Roll for orientation).
 
+## Level and console tools
+
+### list_levels
+
+List every map (World) asset under `/Game` with its object path.
+
+```json
+{ "command": "list_levels", "params": {} }
+```
+
+### get_current_level
+
+Report the open level: `level_name`, `package`, `path`, and `is_dirty`.
+
+```json
+{ "command": "get_current_level", "params": {} }
+```
+
+### editor_play / editor_stop
+
+Start or stop a Play-In-Editor session on the current map (in-process).
+
+```json
+{ "command": "editor_play", "params": {} }
+{ "command": "editor_stop", "params": {} }
+```
+
+`editor_play` returns `state` `requested` (PIE starts on the next editor tick)
+or `already_playing`; `editor_stop` returns `stopping` or `not_playing`. Pair
+with `capture_pie_screenshot` for an automated play-capture-stop loop.
+
+### console_command
+
+Run an allowlisted console command. Allowed prefixes: `stat `, `show `, `r.`,
+`sg.`, `foliage.`, `grass.`, `t.MaxFPS`, `HighResShot`. Anything else (for
+example `quit`, `exec`, `gunit`) is refused with a clear message. Output goes to
+the editor log; the reply reports whether the editor marked the command handled.
+
+```json
+{ "command": "console_command", "params": { "command": "stat fps" } }
+```
+
 ## Future Enhancements
 
 - Support for setting viewport display mode (wireframe, lit, etc.)

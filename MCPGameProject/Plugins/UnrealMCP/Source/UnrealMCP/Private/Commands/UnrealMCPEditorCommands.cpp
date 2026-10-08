@@ -497,6 +497,13 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("move_assets")) { return HandleMoveAssets(Params); }
     else if (CommandType == TEXT("move_folder")) { return HandleMoveFolder(Params); }
     else if (CommandType == TEXT("resave_packages")) { return HandleResavePackages(Params); }
+    else if (CommandType == TEXT("get_asset_graph")) { return HandleGetAssetGraph(Params); }
+    else if (CommandType == TEXT("delete_assets")) { return HandleDeleteAssets(Params); }
+    else if (CommandType == TEXT("console_command")) { return HandleConsoleCommand(Params); }
+    else if (CommandType == TEXT("editor_play")) { return HandleEditorPlay(Params); }
+    else if (CommandType == TEXT("editor_stop")) { return HandleEditorStop(Params); }
+    else if (CommandType == TEXT("list_levels")) { return HandleListLevels(Params); }
+    else if (CommandType == TEXT("get_current_level")) { return HandleGetCurrentLevel(Params); }
     else if (CommandType == TEXT("recover_editor")) { return HandleRecoverEditor(Params); }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -562,6 +569,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("apply_blueprint_plan"), TEXT("get_plan_status"),
         TEXT("get_job_status"), TEXT("list_redirectors"), TEXT("fixup_redirectors"),
         TEXT("move_assets"), TEXT("move_folder"), TEXT("resave_packages"),
+        TEXT("get_asset_graph"), TEXT("delete_assets"), TEXT("console_command"),
+        TEXT("editor_play"), TEXT("editor_stop"),
+        TEXT("list_levels"), TEXT("get_current_level"),
         TEXT("delete_blueprint_node"), TEXT("clear_blueprint_graph"),
         TEXT("disconnect_blueprint_pin"), TEXT("get_blueprint_graphs"),
         TEXT("set_blueprint_node_pin_default"),
@@ -3184,6 +3194,336 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetBoolField(TEXT("success"), true);
+    return ResultObj;
+}
+
+// Resolve an object path ("/Game/A/Foo", "/Game/A/Foo.Foo", possibly a redirector) to the
+// asset it names. Redirectors are followed optionally so queries can run pre-cleanup.
+static bool ResolveGraphAsset(const FString& ObjectPath, bool bFollowRedirectors, FAssetData& OutAsset, FString& Error)
+{
+    const FString Trimmed = ObjectPath.TrimStartAndEnd();
+    FString PackageName;
+    {
+        FString AssetName;
+        if (!SplitObjectPath(Trimmed, PackageName, AssetName))
+        {
+            Error = TEXT("Invalid asset path: ") + Trimmed;
+            return false;
+        }
+    }
+
+    IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+    AR.WaitForPackage(PackageName);
+
+    OutAsset = AR.GetAssetByObjectPath(FSoftObjectPath(Trimmed));
+    if (!OutAsset.IsValid())
+    {
+        // Fall back to package-level lookup; also accept a bare package path.
+        TArray<FAssetData> Assets;
+        AR.GetAssetsByPackageName(FName(*PackageName), Assets);
+        if (Assets.Num() > 0)
+        {
+            OutAsset = Assets[0];
+        }
+        else if (bFollowRedirectors && FPackageName::DoesPackageExist(PackageName))
+        {
+            UPackage* Package = FindPackage(nullptr, *PackageName);
+            if (!Package) { Package = LoadPackage(nullptr, *PackageName, LOAD_None); }
+            if (Package)
+            {
+                const FString Name = FPackageName::GetLongPackageAssetName(PackageName);
+                if (UObjectRedirector* Redirector = FindObject<UObjectRedirector>(Package, *Name))
+                {
+                    OutAsset = AR.GetAssetByObjectPath(FSoftObjectPath(Redirector->DestinationObject));
+                }
+            }
+        }
+    }
+
+    if (!OutAsset.IsValid())
+    {
+        Error = TEXT("Asset not found in registry: ") + Trimmed;
+        return false;
+    }
+    return true;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetAssetGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ObjectPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), ObjectPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+    FString Direction = TEXT("both");
+    Params->TryGetStringField(TEXT("direction"), Direction);
+    Direction = Direction.ToLower();
+    if (Direction != TEXT("both") && Direction != TEXT("dependencies") && Direction != TEXT("referencers"))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("direction must be 'dependencies', 'referencers', or 'both'"));
+    }
+    bool bFollowRedirectors = true;
+    if (Params->HasField(TEXT("follow_redirectors"))) { bFollowRedirectors = Params->GetBoolField(TEXT("follow_redirectors")); }
+
+    FAssetData Asset;
+    FString Error;
+    if (!ResolveGraphAsset(ObjectPath, bFollowRedirectors, Asset, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    if (Asset.IsUAsset())
+    {
+        ResultObj->SetStringField(TEXT("asset"), Asset.GetSoftObjectPath().ToString());
+        ResultObj->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+    }
+    else
+    {
+        ResultObj->SetStringField(TEXT("asset"), Asset.PackageName.ToString());
+        ResultObj->SetStringField(TEXT("class"), TEXT("Package"));
+    }
+    ResultObj->SetStringField(TEXT("package"), Asset.PackageName.ToString());
+
+    if (Direction == TEXT("both") || Direction == TEXT("dependencies"))
+    {
+        TArray<FAssetIdentifier> Dependencies;
+        AR.GetDependencies(Asset.PackageName, Dependencies);
+        TArray<TSharedPtr<FJsonValue>> DepArray;
+        for (const FAssetIdentifier& Dep : Dependencies)
+        {
+            DepArray.Add(MakeShared<FJsonValueString>(Dep.PackageName.ToString()));
+        }
+        ResultObj->SetArrayField(TEXT("dependencies"), DepArray);
+    }
+
+    if (Direction == TEXT("both") || Direction == TEXT("referencers"))
+    {
+        TArray<FAssetIdentifier> Referencers;
+        AR.GetReferencers(Asset.PackageName, Referencers);
+        TArray<TSharedPtr<FJsonValue>> RefArray;
+        for (const FAssetIdentifier& Ref : Referencers)
+        {
+            RefArray.Add(MakeShared<FJsonValueString>(Ref.PackageName.ToString()));
+        }
+        ResultObj->SetArrayField(TEXT("referencers"), RefArray);
+    }
+
+    ResultObj->SetBoolField(TEXT("success"), true);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteAssets(const TSharedPtr<FJsonObject>& Params)
+{
+    const TArray<TSharedPtr<FJsonValue>>* AssetPathsPtr = nullptr;
+    if (!Params->TryGetArrayField(TEXT("asset_paths"), AssetPathsPtr) || !AssetPathsPtr || AssetPathsPtr->Num() == 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_paths' array"));
+    }
+
+    TArray<FString> ObjectPaths;
+    for (const TSharedPtr<FJsonValue>& Value : *AssetPathsPtr)
+    {
+        if (Value.IsValid() && Value->Type == EJson::String)
+        {
+            ObjectPaths.Add(Value->AsString().TrimStartAndEnd());
+        }
+    }
+    if (ObjectPaths.Num() == 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("asset_paths contains no valid strings"));
+    }
+    bool bForce = false;
+    if (Params->HasField(TEXT("force"))) { bForce = Params->GetBoolField(TEXT("force")); }
+
+    TArray<FString> Deleted;
+    TArray<FString> Failed;
+    for (const FString& ObjectPath : ObjectPaths)
+    {
+        FString PackageName;
+        FString AssetName;
+        if (!SplitObjectPath(ObjectPath, PackageName, AssetName))
+        {
+            Failed.Add(ObjectPath + TEXT(": invalid path"));
+            continue;
+        }
+        if (!UEditorAssetLibrary::DoesAssetExist(ObjectPath) && !FPackageName::DoesPackageExist(PackageName))
+        {
+            Failed.Add(ObjectPath + TEXT(": asset does not exist"));
+            continue;
+        }
+        // DeleteLoadedAsset leaves a redirector behind by design; delete the asset then
+        // run the same verified redirector cleanup moves use, so nothing stale remains.
+        if (!UEditorAssetLibrary::DeleteAsset(ObjectPath))
+        {
+            Failed.Add(ObjectPath + TEXT(": DeleteAsset failed (referencers or read-only package)"));
+            continue;
+        }
+        FString CleanupError;
+        if (!FixAndVerifyRedirector(PackageName, /*bDelete*/ true, CleanupError, /*bApplyFixup*/ false))
+        {
+            Failed.Add(ObjectPath + TEXT(": deleted but redirector cleanup failed: ") + CleanupError);
+            continue;
+        }
+        Deleted.Add(ObjectPath);
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    const bool bAllDeleted = Failed.Num() == 0;
+    ResultObj->SetBoolField(TEXT("success"), bAllDeleted || (bForce && Deleted.Num() > 0));
+    ResultObj->SetNumberField(TEXT("deleted"), Deleted.Num());
+    ResultObj->SetNumberField(TEXT("failed"), Failed.Num());
+    if (!bAllDeleted)
+    {
+        ResultObj->SetStringField(TEXT("error"), FString::Join(Failed, TEXT("; ")));
+    }
+    TArray<TSharedPtr<FJsonValue>> DeletedArray;
+    for (const FString& P : Deleted) { DeletedArray.Add(MakeShared<FJsonValueString>(P)); }
+    ResultObj->SetArrayField(TEXT("deleted_paths"), DeletedArray);
+    TArray<TSharedPtr<FJsonValue>> FailedArray;
+    for (const FString& P : Failed) { FailedArray.Add(MakeShared<FJsonValueString>(P)); }
+    ResultObj->SetArrayField(TEXT("failures"), FailedArray);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleConsoleCommand(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Command;
+    if (!Params->TryGetStringField(TEXT("command"), Command))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'command' parameter"));
+    }
+    Command = Command.TrimStartAndEnd();
+
+    // Allowlist by prefix: editor-world state queries and scalability/viewmode tweaks only.
+    // Mutating console commands (exec, quit, Log off, gunit, etc.) stay out of reach.
+    static const TCHAR* AllowedPrefixes[] = {
+        TEXT("stat "), TEXT("show "), TEXT("r."), TEXT("foliage."), TEXT("grass."),
+        TEXT("sg."), TEXT("foliageLODDistanceScale"), TEXT("grassDensityScale"),
+        TEXT("t.MaxFPS"), TEXT("displayfrequency"), TEXT("HighResShot")
+    };
+    bool bAllowed = false;
+    for (const TCHAR* Prefix : AllowedPrefixes)
+    {
+        if (Command.StartsWith(Prefix, ESearchCase::IgnoreCase)) { bAllowed = true; break; }
+    }
+    if (!bAllowed)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Console command not allowlisted: %s (allowed: stat/show/r.*/sg.*/foliage.*/grass.*/t.MaxFPS/HighResShot)"), *Command));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world"));
+    }
+    // Route through the PIE world too when one is live, so `stat` works during play.
+    if (GEditor->PlayWorld)
+    {
+        GEditor->Exec(GEditor->PlayWorld, *Command);
+    }
+    const bool bHandled = GEditor->Exec(World, *Command);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetBoolField(TEXT("handled"), bHandled);
+    ResultObj->SetStringField(TEXT("command"), Command);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleEditorPlay(const TSharedPtr<FJsonObject>& Params)
+{
+    UEditorEngine* Editor = GEditor;
+    if (!Editor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor engine"));
+    }
+    if (Editor->PlayWorld)
+    {
+        TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+        ResultObj->SetBoolField(TEXT("success"), true);
+        ResultObj->SetStringField(TEXT("state"), TEXT("already_playing"));
+        return ResultObj;
+    }
+
+    // FRequestPlaySessionParams defaults to InProcess + PlayInEditor; the editor picks the
+    // current map and game mode. The request is consumed on a later editor tick.
+    FRequestPlaySessionParams PlayParams;
+    Editor->RequestPlaySession(PlayParams);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("state"), TEXT("requested"));
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleEditorStop(const TSharedPtr<FJsonObject>& Params)
+{
+    UEditorEngine* Editor = GEditor;
+    if (!Editor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor engine"));
+    }
+    if (!Editor->PlayWorld)
+    {
+        TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+        ResultObj->SetBoolField(TEXT("success"), true);
+        ResultObj->SetStringField(TEXT("state"), TEXT("not_playing"));
+        return ResultObj;
+    }
+    Editor->RequestEndPlayMap();
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("state"), TEXT("stopping"));
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleListLevels(const TSharedPtr<FJsonObject>& Params)
+{
+    IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+    FARFilter Filter;
+    Filter.ClassPaths.Add(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("World")));
+    Filter.PackagePaths.Add(TEXT("/Game"));
+    Filter.bRecursivePaths = true;
+
+    TArray<FAssetData> Levels;
+    AR.GetAssets(Filter, Levels);
+
+    TArray<TSharedPtr<FJsonValue>> LevelArray;
+    for (const FAssetData& Level : Levels)
+    {
+        TSharedPtr<FJsonObject> LevelObj = MakeShared<FJsonObject>();
+        LevelObj->SetStringField(TEXT("name"), Level.AssetName.ToString());
+        LevelObj->SetStringField(TEXT("path"), Level.GetSoftObjectPath().ToString());
+        LevelArray.Add(MakeShared<FJsonValueObject>(LevelObj));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetNumberField(TEXT("count"), LevelArray.Num());
+    ResultObj->SetArrayField(TEXT("levels"), LevelArray);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCurrentLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world"));
+    }
+    UPackage* LevelPackage = World->GetOutermost();
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("level_name"), World->GetName());
+    ResultObj->SetStringField(TEXT("package"), LevelPackage ? LevelPackage->GetName() : FString());
+    ResultObj->SetStringField(TEXT("path"), LevelPackage ? LevelPackage->GetName() + TEXT(".") + World->GetName() : FString());
+    ResultObj->SetBoolField(TEXT("is_dirty"), LevelPackage ? LevelPackage->IsDirty() : false);
     return ResultObj;
 }
 

@@ -303,6 +303,13 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("move_assets") ||
         CommandType == TEXT("move_folder") ||
         CommandType == TEXT("resave_packages") ||
+        CommandType == TEXT("get_asset_graph") ||
+        CommandType == TEXT("delete_assets") ||
+        CommandType == TEXT("console_command") ||
+        CommandType == TEXT("editor_play") ||
+        CommandType == TEXT("editor_stop") ||
+        CommandType == TEXT("list_levels") ||
+        CommandType == TEXT("get_current_level") ||
         CommandType == TEXT("recover_editor"))
     {
         return EditorCommands->HandleCommand(CommandType, Params);

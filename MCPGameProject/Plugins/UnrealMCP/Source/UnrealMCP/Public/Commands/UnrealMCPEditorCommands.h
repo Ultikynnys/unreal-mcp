@@ -96,6 +96,23 @@ private:
     TSharedPtr<FJsonObject> HandleMoveFolder(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleResavePackages(const TSharedPtr<FJsonObject>& Params);
 
+    // Asset dependency / reference graph (AssetRegistry, both directions)
+    TSharedPtr<FJsonObject> HandleGetAssetGraph(const TSharedPtr<FJsonObject>& Params);
+
+    // Bulk delete with redirector-aware cleanup for deleted referencers
+    TSharedPtr<FJsonObject> HandleDeleteAssets(const TSharedPtr<FJsonObject>& Params);
+
+    // Console command (GEditor->Exec, allowlisted prefixes)
+    TSharedPtr<FJsonObject> HandleConsoleCommand(const TSharedPtr<FJsonObject>& Params);
+
+    // PIE session control
+    TSharedPtr<FJsonObject> HandleEditorPlay(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleEditorStop(const TSharedPtr<FJsonObject>& Params);
+
+    // Level listing / current level
+    TSharedPtr<FJsonObject> HandleListLevels(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetCurrentLevel(const TSharedPtr<FJsonObject>& Params);
+
     // Applies up to Budget ops of the job and returns true while work remains
     // (the ticker reschedules itself until false).
     bool RunBlueprintPlanChunk(const FString& JobId, int32 Budget);

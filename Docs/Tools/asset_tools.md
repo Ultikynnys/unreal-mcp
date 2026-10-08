@@ -154,3 +154,29 @@ of string paths in external files or custom serialized data.
 { "command": "fixup_redirectors", "params": { "path": "/Game/Art", "recursive": true } }
 { "command": "get_job_status", "params": { "job_id": "<id from fixup_redirectors>" } }
 ```
+
+## Dependency / reference graph
+
+`get_asset_graph` answers "what does this load" and "what loads this" from the
+AssetRegistry, so an impact check can run before a move. Pass a package path or
+an object path; a stale (redirector) path is followed to the real asset.
+
+```json
+{ "command": "get_asset_graph", "params": { "asset_path": "/Game/Art/MI_Wood" } }
+```
+
+Returns `dependencies` (packages this asset imports) and `referencers`
+(packages importing this asset). Restrict with `direction` =
+`dependencies` | `referencers` | `both` (default).
+
+## Deleting assets
+
+```json
+{ "command": "delete_assets", "params": { "asset_paths": ["/Game/Art/Old_01", "/Game/Art/Old_MI"] } }
+```
+
+Each path is deleted, then the redirector the delete leaves behind is verified
+gone with the same cleanup machinery as a move. Returns `deleted`, `failed`,
+`deleted_paths`, and `failures` (each naming the path and the reason). A
+`success:false` reply carries the failure summary in `error`. `force:true` keeps
+`success:true` when some paths fail; always inspect `failures`.

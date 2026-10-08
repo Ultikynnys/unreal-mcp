@@ -210,4 +210,57 @@ def register_asset_tools(mcp: FastMCP):
             logger.error(f"Error resaving packages: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def get_asset_graph(
+        ctx: Context,
+        asset_path: str,
+        direction: str = "both",
+        follow_redirectors: bool = True
+    ) -> Dict[str, Any]:
+        """Get an asset's dependency/referencer packages (AssetRegistry, both directions).
+
+        direction: 'dependencies' (what this asset loads), 'referencers' (what loads
+        this asset), or 'both' (default). Follows a redirector to the real asset when
+        the given path is stale, so a pre-move impact check works at any cleanup stage.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("get_asset_graph", {
+                "asset_path": asset_path,
+                "direction": direction,
+                "follow_redirectors": follow_redirectors,
+            })
+        except Exception as e:
+            logger.error(f"Error getting asset graph: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def delete_assets(
+        ctx: Context,
+        asset_paths: List[str],
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """Delete assets and clear the redirector they leave behind.
+
+        Each path is deleted, then the leftover source-package redirector is verified
+        gone using the same machinery as move_assets cleanup: a deleted-but-stale
+        redirector is reported in 'failures' instead of being silently ignored.
+        force=True keeps success=True when some paths fail; check 'failures' either way.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("delete_assets", {
+                "asset_paths": asset_paths,
+                "force": force,
+            })
+        except Exception as e:
+            logger.error(f"Error deleting assets: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Asset tools registered successfully")
