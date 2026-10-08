@@ -9,7 +9,8 @@ public class UnrealMCP : ModuleRules
 	// revision instead of the checkout's. MCP_REVISION env wins, so a plugin copied into another
 	// project can pin the revision of the repo it came from rather than the hosting HEAD.
 	// Careful: UBT caches rule evaluation, so a bare rebuild after a commit says "up to date" and
-	// keeps the old revision. Touch this file (or a clean build) to refresh it.
+	// keeps the old revision. Editing this file (or a clean build) is what refreshes it, which is
+	// why a stale DLL after a commit means "edit Build.cs, then rebuild", not "rebuild".
 	private string BuildRevision()
 	{
 		string FromEnv = System.Environment.GetEnvironmentVariable("MCP_REVISION");
