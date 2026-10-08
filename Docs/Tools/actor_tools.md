@@ -31,8 +31,9 @@ Get a list of all actors in the current level.
 Create a new actor in the current level.
 
 **Parameters:**
-- `name` (string) - The name for the new actor (must be unique)
-- `type` (string) - The type of actor to create (must be uppercase)
+- `name` (string) - The name for the new actor
+- `type` (string) - Actor class name; case-insensitive. One of `StaticMeshActor`,
+  `PointLight`, `SpotLight`, `DirectionalLight`, `CameraActor`
 - `location` (array, optional) - [X, Y, Z] coordinates for the actor's position, defaults to [0, 0, 0]
 - `rotation` (array, optional) - [Pitch, Yaw, Roll] values for the actor's rotation, defaults to [0, 0, 0]
 - `scale` (array, optional) - [X, Y, Z] values for the actor's scale, defaults to [1, 1, 1]
@@ -45,11 +46,9 @@ Create a new actor in the current level.
 {
   "command": "spawn_actor",
   "params": {
-    "name": "MyCube",
-    "type": "CUBE",
-    "location": [0, 0, 100],
-    "rotation": [0, 45, 0],
-    "scale": [2, 2, 2]
+    "name": "MyLight",
+    "type": "PointLight",
+    "location": [0, 0, 100]
   }
 }
 ```
@@ -133,7 +132,13 @@ All command responses include a "success" field indicating whether the operation
 ## Implementation Notes
 
 - All numeric parameters for transforms (location, rotation, scale) must be provided as lists of 3 float values
-- Actor types should be provided in uppercase
+- `spawn_actor` accepts the actor class name (case-insensitive): `StaticMeshActor`,
+  `PointLight`, `SpotLight`, `DirectionalLight`, or `CameraActor`. Anything else is
+  rejected with "Unknown actor type". For meshes, lights, blueprints and instanced
+  meshes prefer the dedicated tools (spawn_mesh_actor, spawn_light_actor,
+  spawn_blueprint_actor, spawn_mesh_grid, spawn_instanced_mesh)
+- A spawned actor's name may gain a suffix to keep it unique; use the name the tool
+  returns, not the one you asked for
 - The server maintains logging of all operations with detailed information and error messages
 - All commands are executed through a connection to the Unreal Engine editor
 
@@ -141,17 +146,13 @@ All command responses include a "success" field indicating whether the operation
 
 ### Actor Types
 
-Supported actor types for the `spawn_actor` command:
+Accepted `spawn_actor` values (see Implementation Notes):
 
-- `CUBE` - Static mesh cube
-- `SPHERE` - Static mesh sphere
-- `CYLINDER` - Static mesh cylinder
-- `PLANE` - Static mesh plane
-- `POINT_LIGHT` - Point light source
-- `SPOT_LIGHT` - Spot light source
-- `DIRECTIONAL_LIGHT` - Directional light source
-- `CAMERA` - Camera actor
-- `EMPTY` - Empty actor (container)
+- `StaticMeshActor` - static mesh actor (assign a mesh with spawn_mesh_actor)
+- `PointLight` - point light
+- `SpotLight` - spot light
+- `DirectionalLight` - directional light
+- `CameraActor` - camera actor
 
 ## Future Extensions
 

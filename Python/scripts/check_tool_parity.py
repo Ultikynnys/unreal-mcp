@@ -100,6 +100,32 @@ def collect_dispatched_commands(root: pathlib.Path) -> dict[str, set[str]]:
     return dispatched
 
 
+def collect_bridge_commands(root: pathlib.Path) -> set[str]:
+    """Every command name that appears in the bridge's ExecuteCommand routing."""
+    bridge = root / CPP_BRIDGE_REL
+    if not bridge.exists():
+        return set()
+    return set(CPP_CMD_RE.findall(bridge.read_text(encoding="utf-8", errors="replace")))
+
+
+CAPS_ARRAY_RE = re.compile(r"SupportedCommands\[\]\s*=\s*\{(.*?)\};", re.S)
+CAPS_ENTRY_RE = re.compile(r'TEXT\("([a-z0-9_]+)"\)')
+
+
+def collect_advertised_commands(root: pathlib.Path) -> set[str]:
+    """Commands the plugin reports from get_capabilities (its SupportedCommands array).
+
+    This is a self-report, so it drifts silently: an entry whose handler was later
+    removed still ships to callers as a capability they will find broken.
+    """
+    for path in sorted(root.glob(CPP_COMMANDS_GLOB)):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        array = CAPS_ARRAY_RE.search(text)
+        if array:
+            return set(CAPS_ENTRY_RE.findall(array.group(1)))
+    return set()
+
+
 def collect_python_commands(root: pathlib.Path) -> tuple[dict[str, set[str]], list[str]]:
     """Return ({command: {tool files}}, files_scanned) sent by the Python layer."""
     commands: dict[str, set[str]] = {}
@@ -294,6 +320,13 @@ def main(argv: list[str] | None = None) -> int:
     dispatched = collect_dispatched_commands(root)
     unrouted = sorted(cmd for cmd in routed if cmd not in dispatched)
 
+    # get_capabilities advertises a command list; an entry with no handler is a
+    # capability the plugin reports but cannot serve. Commands the bridge answers
+    # inline (ping, reload_server) are backed without a handler class.
+    advertised = collect_advertised_commands(root)
+    inline = collect_bridge_commands(root) - routed
+    unbacked = sorted(cmd for cmd in advertised if cmd not in dispatched and cmd not in inline)
+
     # Parameter-level drift (best effort): a command present on both sides whose
     # Python-sent parameters are not all read by the matching C++ handler.
     cpp_handlers = collect_command_handlers(root)
@@ -339,6 +372,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {cmd}")
         print()
 
+    if unbacked:
+        print(f"FAIL: {len(unbacked)} command(s) are advertised by get_capabilities but no "
+              f"handler dispatches them (reported capability that cannot be served):")
+        for cmd in unbacked:
+            print(f"  - {cmd}")
+        print()
+
     if drift:
         print(f"FAIL: {len(drift)} command(s) send a parameter the C++ handler never reads:")
         for cmd in sorted(drift):
@@ -360,6 +400,10 @@ def main(argv: list[str] | None = None) -> int:
     if unrouted:
         print("Parity check FAILED: the bridge routes commands that no handler class "
               "dispatches, so those calls fail at runtime.")
+        return 1
+    if unbacked:
+        print("Parity check FAILED: get_capabilities advertises commands no handler "
+              "dispatches.")
         return 1
     if drift:
         print("Parity check FAILED: parameter drift between the Python tool layer "

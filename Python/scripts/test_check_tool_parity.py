@@ -149,6 +149,31 @@ class ParityCheckTests(unittest.TestCase):
             result = self._run(tmp)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_advertised_without_handler_fails(self):
+        """get_capabilities must not advertise a command no handler dispatches.
+
+        That entry ships to callers as a capability they will find broken; it is a
+        self-report, so it drifts silently unless the checker reads it.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _write(tmp, CPP_COMMANDS_REL,
+                   "TSharedPtr<FJsonObject> FThingCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("do_thing")) { return HandleDoThing(Params); }\n'
+                   "    static const TCHAR* SupportedCommands[] = {\n"
+                   '        TEXT("do_thing"),\n'
+                   '        TEXT("gone_command")\n'
+                   "    };\n"
+                   "    return nullptr;\n"
+                   "}\n")
+            _make_bridge(tmp, ["do_thing"])
+            _make_py_tool(tmp, ["do_thing"])
+            result = self._run(tmp)
+            self.assertEqual(result.returncode, 1,
+                             "checker must fail when get_capabilities advertises an unimplemented command")
+            self.assertIn("gone_command", result.stdout)
+
     def test_real_repo_has_parity(self):
         """The actual fork must satisfy the parity contract."""
         result = self._run(REPO_ROOT)

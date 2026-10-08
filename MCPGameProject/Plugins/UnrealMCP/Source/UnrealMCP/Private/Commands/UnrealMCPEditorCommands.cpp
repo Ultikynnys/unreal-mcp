@@ -555,13 +555,13 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
     ResultObj->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
 
     static const TCHAR* SupportedCommands[] = {
-        TEXT("get_actors_in_level"), TEXT("find_actors_by_name"), TEXT("spawn_actor"),
-        TEXT("create_actor"), TEXT("delete_actor"), TEXT("set_actor_transform"),
-        TEXT("get_actor_properties"), TEXT("get_actor_details"), TEXT("set_actor_property"),
+        TEXT("get_actors_in_level"), TEXT("spawn_actor"),
+        TEXT("delete_actor"), TEXT("set_actor_transform"),
+        TEXT("get_actor_details"), TEXT("set_actor_property"),
         TEXT("spawn_blueprint_actor"), TEXT("spawn_mesh_actor"), TEXT("spawn_light_actor"),
         TEXT("spawn_mesh_grid"), TEXT("spawn_instanced_mesh"), TEXT("set_actor_material"),
         TEXT("set_actor_folder"), TEXT("delete_actors_by_prefix"), TEXT("focus_viewport"),
-        TEXT("take_screenshot"), TEXT("capture_viewport_screenshot"), TEXT("capture_pie_screenshot"), TEXT("set_viewport_camera"),
+        TEXT("capture_viewport_screenshot"), TEXT("capture_pie_screenshot"), TEXT("set_viewport_camera"),
         TEXT("create_level"), TEXT("save_level"), TEXT("load_level"), TEXT("delete_level"),
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
         TEXT("batch_execute"), TEXT("execute_python"), TEXT("reload_server"),
@@ -1210,6 +1210,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteLevel(const TShare
 
     // Deleting the open map unloads its world; release lingering Python pins first
     // (same "World memory leaks" ensure hazard as create_level / load_level).
+    // The file cannot be removed while its world is the active one, so a forced delete
+    // of the open level switches to a blank untitled map before removing it.
+    if (bForce && !CurrentPackage.IsEmpty() && MapPackage.Equals(CurrentPackage, ESearchCase::IgnoreCase))
+    {
+        if (GEditor)
+        {
+            GEditor->NewMap();
+        }
+    }
     ClearPythonPinsAndGC();
 
     if (!UEditorAssetLibrary::DeleteAsset(MapPath))
