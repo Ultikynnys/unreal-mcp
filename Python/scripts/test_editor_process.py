@@ -75,6 +75,34 @@ class ClassifyProcessTests(unittest.TestCase):
         self.assertTrue(tagged["stale"])
 
 
+class SnapshotTests(unittest.TestCase):
+    def test_parse_valid(self):
+        snap = editor_process.parse_snapshot('{"state": "busy", "command": "save_level"}')
+        self.assertEqual(snap["state"], "busy")
+
+    def test_parse_missing_or_malformed(self):
+        self.assertIsNone(editor_process.parse_snapshot(""))
+        self.assertIsNone(editor_process.parse_snapshot("not json"))
+        self.assertIsNone(editor_process.parse_snapshot("[1, 2]"))
+
+    def test_describe_busy_names_command_stall_and_modal(self):
+        text = editor_process.describe_snapshot({
+            "state": "busy", "command": "save_level", "command_elapsed_seconds": 41.0,
+            "game_thread_stalled_seconds": 41.2, "modal_title": "Redirector Update Report",
+        })
+        self.assertIn("state=busy", text)
+        self.assertIn("save_level", text)
+        self.assertIn("game_thread_stalled=41.2s", text)
+        self.assertIn("modal='Redirector Update Report'", text)
+
+    def test_describe_idle_and_absent(self):
+        idle = editor_process.describe_snapshot({"state": "idle", "last_command": "ping",
+                                                 "last_command_seconds": 0.1,
+                                                 "game_thread_stalled_seconds": 0.2})
+        self.assertIn("last='ping'", idle)
+        self.assertIn("no snapshot", editor_process.describe_snapshot(None))
+
+
 class OwnerPidTests(unittest.TestCase):
     def test_monitor_flag(self):
         self.assertEqual(editor_process.parse_owner_pid("x -MONITOR=33752 -y"), 33752)

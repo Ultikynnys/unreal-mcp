@@ -165,6 +165,51 @@ def control_plane_secret(server_py: pathlib.Path) -> str:
     return match.group(1) if match else ""
 
 
+SNAPSHOT_REL = ("Saved", "MCP", "bridge_state.json")
+
+
+def snapshot_path(uproject: pathlib.Path) -> pathlib.Path:
+    return uproject.parent.joinpath(*SNAPSHOT_REL)
+
+
+def parse_snapshot(text: str) -> dict | None:
+    """Parse the bridge's out-of-band state file; None when absent or malformed."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def describe_snapshot(snap: dict | None) -> str:
+    """One line an agent can read: what the editor is doing and how stuck the game thread is.
+
+    This is the answer that survives a blocked game thread: the file is written by a thread
+    that is not blocked, so 'busy' plus a climbing stall names the culprit when ping cannot.
+    """
+    if not snap:
+        return "no snapshot (bridge not writing one)"
+    state = str(snap.get("state") or "?")
+    bits = [f"state={state}"]
+    command = str(snap.get("command") or "")
+    last = str(snap.get("last_command") or "")
+    if state == "busy" and command:
+        bits.append(f"running='{command}' {float(snap.get('command_elapsed_seconds') or 0):.0f}s")
+    elif last:
+        bits.append(f"last='{last}' {float(snap.get('last_command_seconds') or 0):.1f}s")
+    bits.append(f"game_thread_stalled={float(snap.get('game_thread_stalled_seconds') or 0):.1f}s")
+    modal = str(snap.get("modal_title") or "")
+    if modal:
+        bits.append(f"modal='{modal}'")
+    error = str(snap.get("last_error") or "")
+    if error:
+        bits.append(f"last_error='{error}'")
+    return ", ".join(bits)
+
+
 # ---------------------------------------------------------------------------
 # OS-touching helpers
 # ---------------------------------------------------------------------------
@@ -258,6 +303,10 @@ def cmd_status(args) -> int:
     restore = (args.uproject.parent / "Saved" / "Autosaves" / "PackageRestoreData.json").exists()
     bridge = probe_bridge()
 
+    snap_file = snapshot_path(args.uproject)
+    snapshot = parse_snapshot(snap_file.read_text(encoding="utf-8", errors="replace")) \
+        if snap_file.is_file() else None
+
     editors = [p for p in classified if p["kind"] == "editor"]
     helpers = [p for p in classified if p["kind"] == "helper"]
 
@@ -267,12 +316,15 @@ def cmd_status(args) -> int:
             "editors_ours": [p["pid"] for p in editors if p["ours"]],
             "orphans": [p["pid"] for p in helpers if p["stale"]],
             "bridge": bridge,
+            "snapshot": snapshot,
             "crash_reports": reports,
             "restore_data_present": restore,
         }, indent=2))
         return 0
 
-    print(f"bridge: {bridge}  ({HOST}:{PORT})")
+    reason = "" if bridge == "ok" else f"  [{describe_snapshot(snapshot)}]"
+    print(f"bridge: {bridge}  ({HOST}:{PORT}){reason}")
+    print(f"bridge state: {describe_snapshot(snapshot)}")
     if not editors:
         print("editors: none")
     for e in editors:

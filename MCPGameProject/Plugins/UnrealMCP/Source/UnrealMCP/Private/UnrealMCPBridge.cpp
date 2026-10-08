@@ -60,6 +60,7 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "MCPStateSnapshot.h"
 #include "CoreGlobals.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -109,7 +110,6 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
 void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Initializing"));
-
     // Give the editor handler a router back into the full command surface so that
     // batch_execute sub-commands reach every handler (blueprint nodes included),
     // not just EditorCommands' own table.
@@ -125,6 +125,10 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     Port = MCP_SERVER_PORT;
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
+    // Diagnostics heartbeat (keeps writing Saved/MCP/bridge_state.json even when the game
+    // thread is blocked by a modal or a long operation), then start the server.
+    FMCPStateSnapshot::Get().Start();
+
     // Start the server automatically
     StartServer();
 }
@@ -133,6 +137,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 void UUnrealMCPBridge::Deinitialize()
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Shutting down"));
+    FMCPStateSnapshot::Get().Stop();
     StopServer();
 }
 
@@ -407,6 +412,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         // exit path by TGuardValue.
         TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
+        // The snapshot is written by a thread that is NOT the game thread, so it keeps
+        // moving while this call blocks the game thread - that is what makes a stuck
+        // editor diagnosable (Saved/MCP/bridge_state.json).
+        FMCPStateSnapshot::Get().MarkDispatchBegin(CommandType);
+
         // ping/reload_server touch no UObjects, and recover_editor is the way OUT of a stuck
         // modal, so all three stay reachable even while a modal is on screen.
         const bool bModalExempt = CommandType == TEXT("ping")
@@ -424,6 +434,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResponseJson->SetStringField(TEXT("error"), FString::Printf(
                     TEXT("Editor modal dialog '%s' is open; automation is blocked. Call recover_editor to dismiss it, then retry."),
                     *ActiveModal->GetTitle().ToString()));
+
+                FMCPStateSnapshot::Get().MarkRefused(CommandType, TEXT("EDITOR_MODAL_ACTIVE"));
 
                 FString ModalString;
                 TSharedRef<TJsonWriter<>> ModalWriter = TJsonWriterFactory<>::Create(&ModalString);
@@ -449,6 +461,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     ResponseJson->SetStringField(TEXT("code"), TEXT("EDITOR_BUSY"));
                     ResponseJson->SetStringField(TEXT("error"),
                         FString::Printf(TEXT("Editor busy: %s. Retry shortly."), *BusyReason));
+
+                    FMCPStateSnapshot::Get().MarkRefused(CommandType, TEXT("EDITOR_BUSY"));
 
                     FString BusyString;
                     TSharedRef<TJsonWriter<>> BusyWriter = TJsonWriterFactory<>::Create(&BusyString);
@@ -498,6 +512,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             ResponseJson->SetStringField(TEXT("error"), UTF8_TO_TCHAR(e.what()));
         }
         
+        const bool bOk = ResponseJson->HasField(TEXT("status"))
+            && ResponseJson->GetStringField(TEXT("status")) == TEXT("success");
+        const FString Reason = ResponseJson->HasField(TEXT("error"))
+            ? ResponseJson->GetStringField(TEXT("error")) : FString();
+        FMCPStateSnapshot::Get().MarkDispatchEnd(CommandType, bOk, Reason);
+
         FString ResultString;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
         FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);

@@ -36,6 +36,28 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 `ok` / `wedged` / `down` distinguishes "dead" from "busy": a busy editor still answers
 `ping`, a crashed one has no process and no listener.
 
+## The out-of-band state file
+
+The bridge writes `MCPGameProject/Saved/MCP/bridge_state.json` from a thread that is **not**
+the game thread, every 250 ms. Every command is dispatched on the game thread, so when the
+game thread is blocked (a modal no one can answer, a long save, a slow task) nothing over the
+socket answers, not even `ping`. This file keeps moving, so the reason survives.
+
+```json
+{
+  "pid": 28956, "project": "MCPGameProject", "state": "busy",
+  "command": "save_level", "command_elapsed_seconds": 41.0,
+  "last_command": "get_capabilities", "last_command_seconds": 0.1,
+  "last_error": "", "modal_title": "Redirector Update Report",
+  "game_thread_stalled_seconds": 41.2
+}
+```
+
+`state: busy` plus a climbing `game_thread_stalled_seconds` names the culprit: the command in
+flight and the last modal on screen. `status` prints this as `bridge state: ...`, appends it to
+a `wedged` verdict, and `--json` carries it as `snapshot`. Read the file directly when the
+bridge socket itself is unreachable. A stale file is harmless: nothing is driven from it.
+
 ## Helper processes outlive a crash
 
 An editor also spawns helpers: `CrashReportClientEditor.exe` (the crash-reporter window) and
