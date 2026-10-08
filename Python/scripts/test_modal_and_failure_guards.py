@@ -73,7 +73,7 @@ EDITOR_CMD_CHECKS = [
     ("batch resave sweep", "int32 ResaveStaleReferencers(const TArray<FString>& MovedSources, FString& OutError)"),
     ("sweep reports its count", "still importing a moved path"),
     ("sweep queries stale referencers", "AssetRegistry.GetReferencers(FName(*Source), Referencers)"),
-    ("sweep resaves the referencer", "UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false)"),
+    ("sweep resaves the referencer", "const bool bReSaved = LoadedWorld"),
 ]
 
 # The sweep must sit AFTER the batch's last request, never inside the per-request rename step.

@@ -1920,7 +1920,15 @@ namespace
 
                 UObject* Loaded = UEditorAssetLibrary::LoadAsset(Name);
                 if (!Loaded) { continue; } // gone, or never loadable: nothing to write
-                if (UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false))
+                UPackage* LoadedPackage = Loaded->GetOutermost();
+                UWorld* LoadedWorld = LoadedPackage ? UWorld::FindWorldInPackage(LoadedPackage) : nullptr;
+                // Pass the PACKAGE, not the object's bare name: SaveAsset("M_Foo") quietly fails,
+                // and a map needs the level path or it keeps its old import on disk.
+                const bool bReSaved = LoadedWorld
+                    ? (LoadedWorld->PersistentLevel
+                        && FEditorFileUtils::SaveLevel(LoadedWorld->PersistentLevel, LoadedPackage->GetName()))
+                    : UEditorAssetLibrary::SaveLoadedAsset(Loaded, false);
+                if (bReSaved)
                 {
                     ++Resaved;
                 }
@@ -2351,7 +2359,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleResavePackages(const TSh
         if (Job->Done >= Pending->Num()) { return false; }
         const FString& AssetPath = (*Pending)[Job->Done];
 
-        const bool bOk = UEditorAssetLibrary::SaveAsset(AssetPath, /*bOnlyIfIsDirty=*/false);
+        UObject* Loaded = UEditorAssetLibrary::LoadAsset(AssetPath);
+        UPackage* LoadedPackage = Loaded ? Loaded->GetOutermost() : nullptr;
+        UWorld* LoadedWorld = LoadedPackage ? UWorld::FindWorldInPackage(LoadedPackage) : nullptr;
+        // resave_packages is the second step of a move's fixup, so a map here must take the level
+        // save path too, or it reports "saved" while keeping its old import on disk.
+        const bool bOk = LoadedWorld
+            ? (LoadedWorld->PersistentLevel
+                && FEditorFileUtils::SaveLevel(LoadedWorld->PersistentLevel, LoadedPackage->GetName()))
+            : (Loaded && UEditorAssetLibrary::SaveLoadedAsset(Loaded, /*bOnlyIfIsDirty=*/false));
         Job->Items.Add(FString::Printf(TEXT("%s: %s"), *AssetPath, bOk ? TEXT("saved") : TEXT("FAILED")));
 
         Job->Done++;
