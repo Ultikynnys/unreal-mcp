@@ -157,18 +157,49 @@ class UnrealSourceContractTests(unittest.TestCase):
         self.assertIn("ObjectTools::ForceReplaceReferences(Destination, Olds)", code)
         positions = [code.index(text) for text in (
             "ObjectTools::ForceReplaceReferences(Destination, Olds)",
-            "const bool bSavedReferencer = ReferencerWorld",
+            "SaveAndVerifyPackage(Loaded, {PackageName}, Error)",
             "CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS)",
             "ObjectTools::ForceDeleteObjects(EmptyPackage, /*bShowConfirmation=*/false)",
             "AR.GetAssetsByPackageName(FName(*PackageName), Remaining)",
         )]
         self.assertEqual(positions, sorted(positions))
-        # A World referencer must not go through the asset save path: that cannot write a map, so
-        # the level keeps its old import on disk, which is what broke the maps during the reorg.
-        self.assertIn("UWorld::FindWorldInPackage(Loaded)", code)
-        self.assertIn("FEditorFileUtils::SaveLevel(ReferencerWorld->PersistentLevel, ReferencerName)", code)
+        self.assertIn("LoadedReferencers.Add(Loaded);", code)
+        self.assertNotIn("if (Loaded) { LoadedReferencers.Add(Loaded); }", code)
+        self.assertIn("RenameReferencingSoftObjectPaths(LoadedReferencers, Remap)", code)
+        self.assertIn("if (!bDelete) { return true; }", code)
         self.assertIn("Redirector->RemoveFromRoot()", code)
         self.assertIn("AR.WaitForPackage(PackageName)", code)
+
+    def test_forced_save_is_verified_from_disk(self):
+        start = self.source.index("    bool SaveAndVerifyPackage(")
+        end = self.source.index("    int32 ResaveStaleReferencers", start)
+        code = self.source[start:end]
+        positions = [code.index(text) for text in (
+            "Package->SetDirtyFlag(true)",
+            "FEditorFileUtils::SaveLevel(World->PersistentLevel, MapFilename)",
+            "ReadDiskImports(Name, After, Error)",
+            "After.Contains(Old)",
+            "ScanFilesSynchronous({Filename}, true)",
+        )]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("UWorld::FindWorldInPackage(Package)", code)
+        self.assertIn("Saved package still imports old path on disk", code)
+        reader = self.source[self.source.index("    bool ReadDiskImports("):start]
+        for check in ("CreateFileReader", "FPackageFileSummary", "FObjectImport Import",
+                      "Summary.ImportOffset", "Summary.SoftPackageReferencesOffset",
+                      "Summary.SoftObjectPathsOffset", "Path.SerializePath(Reader)",
+                      "Reader.IsError() || File->IsError()"):
+            self.assertIn(check, reader)
+
+    def test_persistence_errors_fail_jobs(self):
+        move = self.handler("HandleMoveAssets", "HandleResavePackages")
+        self.assertIn("if (!FixAndVerifyRedirector(Request.Source, true, Error)) { return Fail(Error); }", move)
+        start = self.source.index("    void RecordResaveSweep(")
+        end = self.source.index("    bool NormalizeAssetPackage", start)
+        self.assertIn('Job->State = TEXT("failed")', self.source[start:end])
+        resave = self.handler("HandleResavePackages", "HandleApplyBlueprintPlan")
+        self.assertIn("if (!SaveAndVerifyPackage(LoadedPackage, {}, Error))", resave)
+        self.assertIn('Job->State = TEXT("failed")', resave)
 
 
 if __name__ == "__main__":
