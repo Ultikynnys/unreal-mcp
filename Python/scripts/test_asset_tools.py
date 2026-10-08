@@ -215,6 +215,23 @@ class UnrealSourceContractTests(unittest.TestCase):
         )]
         self.assertEqual(positions, sorted(positions))
 
+    def test_emptied_source_folders_are_removed(self):
+        """UE hides a folder with no assets, so a move leaves an invisible shell on disk with a stale
+        registry path. Cleanup must delete only a folder that holds no file, and clear the path rows."""
+        start = self.source.index("    bool RemoveEmptyFolder(")
+        end = self.source.index("    void RecordResaveSweep(", start)
+        code = self.source[start:end]
+        positions = [code.index(text) for text in (
+            "IterateDirectoryRecursively",
+            "if (bHasFile) { return true; }",
+            "DeleteDirectoryRecursively(*LocalPath)",
+            "AR.GetSubPaths(Folder, SubPaths",
+            "AR.RemovePath(Folder)",
+        )]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('Directory != TEXT("/Game")', code)
+        self.assertIn("RemoveEmptiedSourceFolders(Job, MovedSources);", self.source)
+
     def test_persistence_errors_fail_jobs(self):
         move = self.handler("HandleMoveAssets", "HandleResavePackages")
         self.assertIn("if (!FixAndVerifyRedirector(Request.Source, true, Error)) { return Fail(Error); }", move)
