@@ -191,6 +191,30 @@ class UnrealSourceContractTests(unittest.TestCase):
                       "Reader.IsError() || File->IsError()"):
             self.assertIn(check, reader)
 
+    def test_referencer_save_avoids_the_registry_gate(self):
+        """UEditorAssetLibrary::SaveLoadedAsset gates on IsARegisteredAsset, which looks the package
+        up as an asset and never finds it: every referencer save failed with "Asset is not
+        registered" while the map path worked. The package save must not go through it."""
+        start = self.source.index("    bool SavePackageToDisk(")
+        end = self.source.index("    int32 ResaveStaleReferencers", start)
+        code = self.source[start:end]
+        self.assertNotIn("SaveLoadedAsset", code)
+        for check in ("ForEachObjectWithPackage", "FAssetRegistryModule::AssetCreated(Asset)",
+                      "UPackageTools::SavePackagesForObjects(Objects)",
+                      "UEditorLoadingAndSavingUtils::SavePackages(Packages",
+                      "FPackageName::DoesPackageExist(Name, &Filename)"):
+            self.assertIn(check, code)
+
+    def test_registry_is_current_before_rename(self):
+        """RenameAssets only leaves a redirector when the registry shows the asset's referencers."""
+        move = self.handler("HandleMoveAssets", "HandleResavePackages")
+        positions = [move.index(text) for text in (
+            "AR.WaitForCompletion()",
+            "AR.ScanPathsSynchronous({FPackageName::GetLongPackagePath(Request.Source)}",
+            ".RenameAssets(RenameData)",
+        )]
+        self.assertEqual(positions, sorted(positions))
+
     def test_persistence_errors_fail_jobs(self):
         move = self.handler("HandleMoveAssets", "HandleResavePackages")
         self.assertIn("if (!FixAndVerifyRedirector(Request.Source, true, Error)) { return Fail(Error); }", move)
