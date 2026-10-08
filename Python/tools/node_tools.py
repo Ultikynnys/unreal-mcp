@@ -19,7 +19,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         event_name: str,
-        node_position: Optional[List[float]] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -77,7 +77,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         action_name: str,
-        node_position: Optional[List[float]] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -133,8 +133,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
         blueprint_name: str,
         target: str,
         function_name: str,
-        params: Optional[Dict[str, Any]] = None,
-        node_position: Optional[List[float]] = None,
+        params: Dict[str, Any] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -311,7 +311,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         component_name: str,
-        node_position: Optional[List[float]] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -366,7 +366,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
     def add_blueprint_self_reference(
         ctx: Context,
         blueprint_name: str,
-        node_position: Optional[List[float]] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -417,8 +417,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
     def find_blueprint_nodes(
         ctx: Context,
         blueprint_name: str,
-        node_type = None,
-        event_type = None,
+        node_type: str = None,
+        event_type: str = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -471,8 +471,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         node_type: str,
-        params: Optional[Dict[str, Any]] = None,
-        node_position: Optional[List[float]] = None,
+        params: Dict[str, Any] = None,
+        node_position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """Add a control-flow / special node to a Blueprint's graph.
@@ -876,7 +876,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
     def add_blueprint_reroute_node(
         ctx: Context,
         blueprint_name: str,
-        position: Optional[List[float]] = None,
+        position: List[float] = None,
         graph_name: str = ""
     ) -> Dict[str, Any]:
         """Add a reroute (knot) node to a Blueprint graph.
@@ -928,7 +928,7 @@ def register_blueprint_node_tools(mcp: FastMCP):
         clear: bool = False,
         auto_layout: bool = False,
         async_: bool = True,
-        plan: Optional[Dict[str, Any]] = None
+        plan: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Build a whole Blueprint graph from a plan file in one call.
 

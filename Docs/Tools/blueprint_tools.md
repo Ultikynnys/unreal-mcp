@@ -96,7 +96,9 @@ Set a property on a component in a Blueprint.
 - `blueprint_name` (string) - The name of the Blueprint
 - `component_name` (string) - The name of the component
 - `property_name` (string) - The name of the property to set
-- `property_value` (any) - The value to set for the property
+- `property_value` (any) - The value to set for the property. Enum properties,
+  including `TEnumAsByte` ones such as `mobility`, accept the entry name (`"Movable"`,
+  case-insensitive) or the integer value; an unknown name returns the list of valid entries
 
 **Returns:**
 - Result of the property setting operation including success status and message

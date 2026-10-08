@@ -680,6 +680,50 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                     UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *ErrorMessage);
                 }
             }
+            else if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+            {
+                // TEnumAsByte properties (e.g. Mobility) are FByteProperty, so they land here
+                // rather than the FEnumProperty branch; accept the entry name as well as a number.
+                UEnum* Enum = ByteProp->Enum;
+                if (JsonValue->Type == EJson::String && Enum)
+                {
+                    const FString EnumValueName = JsonValue->AsString();
+                    int64 EnumValue = Enum->GetValueByNameString(EnumValueName);
+                    if (EnumValue == INDEX_NONE)
+                    {
+                        // Match the short entry name too (e.g. "Movable" for "EComponentMobility::Movable").
+                        for (int32 i = 0; i < Enum->NumEnums(); ++i)
+                        {
+                            if (Enum->GetNameStringByIndex(i).EndsWith(EnumValueName, ESearchCase::IgnoreCase))
+                            {
+                                EnumValue = Enum->GetValueByIndex(i);
+                                break;
+                            }
+                        }
+                    }
+                    if (EnumValue != INDEX_NONE)
+                    {
+                        ByteProp->SetIntPropertyValue(ByteProp->ContainerPtrToValuePtr<void>(ComponentTemplate), EnumValue);
+                        bSuccess = true;
+                    }
+                    else
+                    {
+                        TArray<FString> Names;
+                        for (int32 i = 0; i < Enum->NumEnums(); ++i) { Names.Add(Enum->GetNameStringByIndex(i)); }
+                        ErrorMessage = FString::Printf(TEXT("Invalid enum value '%s' for property %s; valid values: %s"),
+                            *EnumValueName, *PropertyName, *FString::Join(Names, TEXT(", ")));
+                    }
+                }
+                else if (JsonValue->Type == EJson::Number)
+                {
+                    ByteProp->SetIntPropertyValue(ByteProp->ContainerPtrToValuePtr<void>(ComponentTemplate), (int64)JsonValue->AsNumber());
+                    bSuccess = true;
+                }
+                else
+                {
+                    ErrorMessage = FString::Printf(TEXT("Property %s expects an enum entry name or a number"), *PropertyName);
+                }
+            }
             else if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
             {
                 // Handle numeric properties

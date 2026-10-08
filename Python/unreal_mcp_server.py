@@ -74,6 +74,30 @@ UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
 # from the connect timeout above.
 UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
 
+
+def _failure_detail(response: Dict[str, Any]) -> str:
+    """Best-effort failure reason built from a reply's own detail fields.
+
+    Used when neither 'error' nor 'message' carries a reason, so the caller never gets a
+    bare "Unknown Unreal error" while the reply actually holds useful detail (a Python
+    trace in 'output', a per-item message in 'results', ...).
+    """
+    output = response.get("output")
+    if isinstance(output, list) and output:
+        text = " ".join(str(line) for line in output).strip()
+        if text:
+            return text[:1000]
+    results = response.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, dict) and item.get("success") is False:
+                reason = item.get("error") or item.get("message")
+                if reason:
+                    command = item.get("command", "action")
+                    return f"{command}: {reason}"
+    return ""
+
+
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
     
@@ -226,21 +250,26 @@ class UnrealConnection:
             
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
+            # Original fields are preserved rather than replaced, so a failure can still be
+            # inspected (execute_python's "output" trace, batch "results", ...) instead of
+            # collapsing to a bare error with the detail discarded.
             if isinstance(response, dict):
+                envelope = dict(response)
                 if response.get("status") == "error" or response.get("success") is False:
-                    error_message = response.get("error") or response.get("message", "Unknown Unreal error")
+                    error_message = (
+                        response.get("error")
+                        or response.get("message")
+                        or _failure_detail(response)
+                        or "Unknown Unreal error"
+                    )
                     logger.error(f"Unreal error: {error_message}")
-                    response = {
-                        "success": False,
-                        "result": response.get("result"),
-                        "message": error_message
-                    }
+                    envelope["success"] = False
+                    envelope["message"] = error_message
                 else:
-                    response = {
-                        "success": True,
-                        "result": response.get("result"),
-                        "message": response.get("message", "")
-                    }
+                    envelope["success"] = True
+                    envelope["result"] = response.get("result")
+                    envelope["message"] = response.get("message", "")
+                response = envelope
             
             # Always close the connection after command is complete
             # since Unreal will close it on its side anyway

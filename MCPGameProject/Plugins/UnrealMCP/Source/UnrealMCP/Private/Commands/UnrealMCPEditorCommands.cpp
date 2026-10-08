@@ -968,7 +968,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnInstancedMesh(const
     if (!FolderPath.IsEmpty()) { NewActor->SetFolderPath(FName(*FolderPath)); }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    // "name" is the internal object name (which UE may have uniquified, e.g. Actor_0);
+    // "label" is the name the caller asked for, and what actor lookups resolve first.
     ResultObj->SetStringField(TEXT("name"), NewActor->GetName());
+    ResultObj->SetStringField(TEXT("label"), NewActor->GetActorLabel());
     ResultObj->SetStringField(TEXT("mesh_path"), MeshPath);
     ResultObj->SetNumberField(TEXT("instance_count"), Count);
     return ResultObj;
@@ -1573,15 +1576,28 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleExecutePython(const TSha
     const bool bSuccess = PythonPlugin->ExecPythonCommandEx(Command);
 
     TArray<TSharedPtr<FJsonValue>> LogArray;
+    FString LastError;
     for (const FPythonLogOutputEntry& Entry : Command.LogOutput)
     {
         LogArray.Add(MakeShared<FJsonValueString>(Entry.Output));
+        if (Entry.Type == EPythonLogOutputType::Error) { LastError = Entry.Output.TrimEnd(); }
     }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetBoolField(TEXT("success"), bSuccess);
     ResultObj->SetStringField(TEXT("command_result"), Command.CommandResult);
     ResultObj->SetArrayField(TEXT("output"), LogArray);
+    if (!bSuccess)
+    {
+        // The client surfaces a failure reason from "error"; without it a Python
+        // exception inside the editor reaches the caller as "Unknown Unreal error".
+        // CommandResult carries the trace on failure, LogOutput is the fallback.
+        FString Reason = Command.CommandResult.TrimStartAndEnd();
+        if (Reason.IsEmpty()) { Reason = LastError; }
+        if (Reason.IsEmpty()) { Reason = TEXT("Python execution failed (see 'output')"); }
+        ResultObj->SetStringField(TEXT("error"), Reason);
+        ResultObj->SetStringField(TEXT("message"), Reason);
+    }
     return ResultObj;
 }
 

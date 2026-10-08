@@ -17,8 +17,8 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def get_actors_in_level(
         ctx: Context,
-        class_filter: Optional[str] = None,
-        search: Optional[str] = None,
+        class_filter: str = None,
+        search: str = None,
         limit: int = 200,
         offset: int = 0
     ) -> Dict[str, Any]:
@@ -333,8 +333,8 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         path: str = "/Game",
         recursive: bool = True,
-        asset_class: Optional[str] = None,
-        search: Optional[str] = None,
+        asset_class: str = None,
+        search: str = None,
         limit: int = 100,
         offset: int = 0
     ) -> Dict[str, Any]:
@@ -385,10 +385,10 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         mesh_path: str,
         name: str = "MeshActor",
-        location: Optional[List[float]] = None,
-        rotation: Optional[List[float]] = None,
-        scale: Optional[List[float]] = None,
-        folder_path: Optional[str] = None,
+        location: List[float] = None,
+        rotation: List[float] = None,
+        scale: List[float] = None,
+        folder_path: str = None,
         allow_duplicate: bool = False
     ) -> Dict[str, Any]:
         """Spawn a StaticMeshActor with a specific static mesh asset into the current level."""
@@ -445,7 +445,7 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         location: List[float],
         rotation: List[float],
-        game_view: Optional[bool] = None
+        game_view: bool = None
     ) -> Dict[str, Any]:
         """Set the Unreal Editor active viewport position, orientation, and game-view mode."""
         from unreal_mcp_server import get_unreal_connection
@@ -488,12 +488,12 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def capture_pie_screenshot(
         ctx: Context,
-        location: Optional[List[float]] = None,
-        rotation: Optional[List[float]] = None,
+        location: List[float] = None,
+        rotation: List[float] = None,
         filename: str = "MCP_PIE_Screenshot.png",
         width: int = 1280,
         height: int = 720,
-        fov: Optional[float] = None
+        fov: float = None
     ) -> Dict[str, Any]:
         """Capture the Play-In-Editor (PIE) window from a specific world location and orientation.
 
@@ -532,7 +532,7 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def save_level(
         ctx: Context,
-        destination_path: Optional[str] = None,
+        destination_path: str = None,
         overwrite: bool = False
     ) -> Dict[str, Any]:
         """Save current level, or save-as to destination_path with overwrite protection."""
@@ -604,9 +604,9 @@ def register_editor_tools(mcp: FastMCP):
         cols: int = 1,
         spacing_x: float = 200.0,
         spacing_y: float = 200.0,
-        origin: Optional[List[float]] = None,
-        rotation: Optional[List[float]] = None,
-        scale: Optional[List[float]] = None,
+        origin: List[float] = None,
+        rotation: List[float] = None,
+        scale: List[float] = None,
         prefix: str = "GridActor",
         folder_path: str = "Environment/Grids"
     ) -> Dict[str, Any]:
@@ -661,10 +661,10 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         light_type: str = "PointLight",
         name: str = "LightActor",
-        location: Optional[List[float]] = None,
-        rotation: Optional[List[float]] = None,
+        location: List[float] = None,
+        rotation: List[float] = None,
         intensity: float = 3000.0,
-        color: Optional[List[float]] = None,
+        color: List[float] = None,
         attenuation_radius: float = 1000.0,
         source_radius: float = 20.0,
         mobility: str = "movable",
@@ -772,7 +772,7 @@ def register_editor_tools(mcp: FastMCP):
         sources: List[str],
         destination_path: str = "/Game",
         replace_existing: bool = True,
-        options: Optional[Dict[str, Any]] = None
+        options: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Import external asset files (textures / meshes / audio) from disk into the project.
 
