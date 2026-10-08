@@ -63,6 +63,8 @@
 #include "Serialization/ArchiveProxy.h"
 #include "UObject/PackageFileSummary.h"
 #include "UObject/ObjectResource.h"
+#include "UObject/UObjectHash.h"
+#include "PackageTools.h"
 
 namespace
 {
@@ -1999,6 +2001,49 @@ namespace
         return true;
     }
 
+    // UEditorAssetLibrary::SaveLoadedAsset gates on IsARegisteredAsset, which looks the package up
+    // as an asset and finds nothing, so referencers failed with "Asset is not registered". Save the
+    // package's own asset instead, registering it first so a stale registry cannot refuse the write.
+    bool SavePackageToDisk(UPackage* Package, FString& Error)
+    {
+        const FString Name = Package->GetName();
+        if (Package->HasAnyFlags(RF_Transient) || Name.StartsWith(TEXT("/Temp/")) ||
+            Name.StartsWith(TEXT("/Transient/")) || Name.StartsWith(TEXT("/Engine/Transient")))
+        {
+            Error = TEXT("Package is transient and cannot be saved: ") + Name;
+            return false;
+        }
+        UObject* Asset = nullptr;
+        ForEachObjectWithPackage(Package, [&Asset](UObject* Object)
+        {
+            if (Object && !Object->IsA<UPackage>() && Object->HasAnyFlags(RF_Public | RF_Standalone))
+            {
+                Asset = Object;
+                return false;
+            }
+            return true;
+        }, /*bIncludeNestedObjects=*/false);
+        TArray<UPackage*> Packages;
+        Packages.Add(Package);
+        TArray<UObject*> Objects;
+        if (Asset)
+        {
+            Asset->MarkPackageDirty();
+            Package->SetDirtyFlag(true);
+            FAssetRegistryModule::AssetCreated(Asset);
+            Objects.Add(Asset);
+        }
+        const bool bSaved = (Objects.Num() > 0 && UPackageTools::SavePackagesForObjects(Objects)) ||
+            UEditorLoadingAndSavingUtils::SavePackages(Packages, /*bOnlyDirty=*/false);
+        FString Filename;
+        if (!bSaved || !FPackageName::DoesPackageExist(Name, &Filename))
+        {
+            Error = TEXT("Package could not be written to disk: ") + Name;
+            return false;
+        }
+        return true;
+    }
+
     bool SaveAndVerifyPackage(UPackage* Package, const TArray<FString>& OldPackages, FString& Error)
     {
         if (!Package)
@@ -2038,7 +2083,7 @@ namespace
         }
         const bool bSaved = World
             ? (World->PersistentLevel && FEditorFileUtils::SaveLevel(World->PersistentLevel, MapFilename))
-            : UEditorAssetLibrary::SaveLoadedAsset(Package, false);
+            : SavePackageToDisk(Package, Error);
         if (!bSaved)
         {
             Error = TEXT("Referencer package failed to save: ") + Name;
@@ -2427,6 +2472,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
         Job->Phase = TEXT("rename: ") + Request.Source;
         TArray<FAssetRenameData> RenameData;
         RenameData.Emplace(Asset.Get(), Request.NewPackagePath, Request.NewName);
+        // RenameAssets drops the redirector unless the registry shows the asset's referencers, so
+        // an ungathered registry silently leaves the old path gone and referencers dangling. Make
+        // the registry current for the source folder first.
+        {
+            IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+            AR.WaitForCompletion();
+            AR.ScanPathsSynchronous({FPackageName::GetLongPackagePath(Request.Source)}, /*bForceRescan=*/false);
+        }
         if (!FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get().RenameAssets(RenameData))
         { return Fail(TEXT("Rename failed (it may have partially changed the asset)")); }
         Job->Phase = TEXT("save: ") + Destination;
