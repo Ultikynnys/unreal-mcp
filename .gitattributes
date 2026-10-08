@@ -1,0 +1,3 @@
+# Hooks are executed by sh, so their line endings must stay LF: a CRLF shebang line makes the
+# hook fail to run on a Windows checkout, which would silently disable the push gate.
+.githooks/* text eol=lf

@@ -130,6 +130,28 @@ class ParityCheckTests(unittest.TestCase):
                              "checker must fail when the bridge routes an undispatched command")
             self.assertIn("ghost_command", result.stdout)
 
+    def test_unallowlisted_cpp_only_command_fails(self):
+        """A served command no Python tool sends is an orphan and must fail.
+
+        This is the focus_viewport case: routed, dispatched and advertised, but no tool
+        called it, so get_capabilities reported a capability nothing could use.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _write(tmp, CPP_COMMANDS_REL,
+                   "TSharedPtr<FJsonObject> FThingCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("do_thing")) { return HandleDoThing(Params); }\n'
+                   '    if (CommandType == TEXT("focus_viewport")) { return HandleFocusViewport(Params); }\n'
+                   "    return nullptr;\n"
+                   "}\n")
+            _make_bridge(tmp, ["do_thing", "focus_viewport"])
+            _make_py_tool(tmp, ["do_thing"])
+            result = self._run(tmp)
+            self.assertEqual(result.returncode, 1,
+                             "checker must fail on a command the plugin serves but no tool sends")
+            self.assertIn("focus_viewport", result.stdout)
+
     def test_inline_bridge_command_is_allowed(self):
         """A command the bridge answers inline (no handler class) is not undispatched."""
         with tempfile.TemporaryDirectory() as d:

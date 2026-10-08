@@ -1,22 +1,25 @@
 name: tool-parity
 
 # Enforce that the Python MCP tool layer and the C++ UnrealMCP plugin stay in sync:
-# every command the Python tools send must have a handler in the C++ dispatch.
-# See Python/scripts/check_tool_parity.py for the contract. The unit tests first
-# prove the checker itself detects gaps (negative test), then the checker runs.
+# every command the Python tools send must have a handler in the C++ dispatch, every
+# served command must be advertised, and the agent-facing docs must not name a tool,
+# parameter or file that does not exist.
+#
+# CI runs the SAME battery as the local pre-push hook (Python/scripts/run_checks.py),
+# so the two gates cannot drift apart. See Docs/ops/pre-push-checks.md.
 
 on:
   push:
     paths:
-      - "Python/tools/**"
-      - "Python/scripts/**"
+      - "Python/**"
       - "MCPGameProject/Plugins/UnrealMCP/Source/**"
+      - ".githooks/**"
       - ".github/workflows/tool-parity.yml"
   pull_request:
     paths:
-      - "Python/tools/**"
-      - "Python/scripts/**"
+      - "Python/**"
       - "MCPGameProject/Plugins/UnrealMCP/Source/**"
+      - ".githooks/**"
       - ".github/workflows/tool-parity.yml"
   workflow_dispatch:
 
@@ -25,7 +28,7 @@ permissions:
 
 jobs:
   parity:
-    name: Python <-> C++ parity
+    name: Python <-> C++ parity and hygiene battery
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,8 +39,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Confirm the parity checker detects gaps (unit tests)
-        run: python Python/scripts/test_check_tool_parity.py
-
-      - name: Assert Python tool layer <-> C++ plugin parity
-        run: python Python/scripts/check_tool_parity.py
+      - name: Run the check battery
+        # The runner's own unit test is part of the battery, so it reports a broken checker
+        # as such rather than as a false failure of the tree.
+        run: python Python/scripts/run_checks.py

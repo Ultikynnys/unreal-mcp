@@ -1,0 +1,27 @@
+#!/bin/sh
+# Pre-push gate: run the shared battery (Python/scripts/run_checks.py) and block the push when
+# any check fails.
+#
+# Tracked here because .git/hooks/ is not versioned. Install on a fresh clone with:
+#     git config core.hooksPath .githooks
+#
+# The battery is offline by design (the live smoke is opt-in via --live), so a push never needs
+# a running editor. Deliberate bypass and its risks are documented in Docs/ops/pre-push-checks.md.
+
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root" || exit 1
+
+# Prefer uv, which pins the project's interpreter; fall back to a plain one. If neither exists,
+# fail closed: a gate that cannot run must never quietly pass for a missing interpreter.
+if command -v uv >/dev/null 2>&1; then
+    uv run --project Python python Python/scripts/run_checks.py
+elif command -v python3 >/dev/null 2>&1; then
+    python3 Python/scripts/run_checks.py
+elif command -v python >/dev/null 2>&1; then
+    python Python/scripts/run_checks.py
+else
+    echo "pre-push: no python interpreter found (uv, python3, python); cannot run the checks" >&2
+    exit 1
+fi

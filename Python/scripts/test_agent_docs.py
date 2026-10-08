@@ -111,13 +111,49 @@ class HygieneTests(unittest.TestCase):
             names |= set(match.group(1).split("/"))
         return names - {"ctx"}  # the MCP context is internal, not a tool parameter
 
+    @staticmethod
+    def _smoke_text() -> str:
+        return (REPO_ROOT / "Python" / "scripts" / "smoke_all_tools.py").read_text(encoding="utf-8")
+
     def test_smoke_parameters_reference_only_real_tools(self):
-        text = (REPO_ROOT / "Python" / "scripts" / "smoke_all_tools.py").read_text(encoding="utf-8")
+        text = self._smoke_text()
         block = text[text.index("PARAMS = {"):text.index("UNKNOWN_MARKERS")]
         keys = set(re.findall(r'^\s{4}"([a-z_][a-z0-9_]+)":', block, re.MULTILINE))
         known = {t.name for t in tool_catalog.discover_tools(TOOLS_DIR)}
-        ghosts = keys - known - {"create_input_mapping"}
+        skip = set(re.findall(r'"([a-z_][a-z0-9_]+)"',
+                              text[text.index("SKIP = {"):text.index("# Removes everything")]))
+        ghosts = keys - known - skip
         self.assertEqual(ghosts, set(), f"smoke parameter map names non-existent tools: {sorted(ghosts)}")
+
+    def test_every_tool_is_exercised_by_the_smoke(self):
+        """A tool that no check calls is a tool nobody noticed was broken.
+
+        Every registered tool must be reachable by the smoke script: it has a PARAMS entry, it
+        is listed in SKIP with a reason, or it takes no parameters (so the no-argument call is
+        already the exercise). A new tool with parameters and no entry fails here.
+        """
+        text = self._smoke_text()
+        block = text[text.index("PARAMS = {"):text.index("UNKNOWN_MARKERS")]
+        covered = set(re.findall(r'^\s{4}"([a-z_][a-z0-9_]+)":', block, re.MULTILINE))
+        covered |= set(re.findall(r'"([a-z_][a-z0-9_]+)"',
+                                  text[text.index("SKIP = {"):text.index("# Removes everything")]))
+        uncovered = sorted(t.name for t in tool_catalog.discover_tools(TOOLS_DIR)
+                           if t.name not in covered and t.params)
+        self.assertEqual(uncovered, [],
+                         f"tools with parameters and no smoke coverage: {uncovered}")
+
+    def test_prepush_hook_runs_the_battery_and_cannot_be_silenced(self):
+        """The gate itself must be wired: a hook that skips or swallows failures is worse
+        than no hook, because it looks like a check."""
+        hook = REPO_ROOT / ".githooks" / "pre-push"
+        self.assertTrue(hook.is_file(), "the tracked pre-push hook is missing")
+        text = hook.read_text(encoding="utf-8")
+        self.assertIn("run_checks.py", text, "the hook does not run the shared battery")
+        for silencing in ("|| true", "|| :", "--no-verify", "exit 0"):
+            self.assertNotIn(silencing, text, f"the hook can be silenced with '{silencing}'")
+        runner = (REPO_ROOT / "Python" / "scripts" / "run_checks.py").read_text(encoding="utf-8")
+        self.assertIn('"Python <-> C++ parity"', runner,
+                      "the parity checker is not part of the battery the hook runs")
 
     def test_docstrings_document_only_real_parameters(self):
         import ast

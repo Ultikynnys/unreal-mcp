@@ -174,6 +174,14 @@ PARAM_ALLOWLIST: dict[str, set[str]] = {
     # a reason) only for a genuine, accepted gap so new drift still fails CI.
 }
 
+# Commands the plugin serves that no Python tool sends. Only two kinds belong here: a command
+# the bridge answers inline (an internal control message with no tool of its own), or a
+# documented alias. Anything else is an ORPHAN - routed, dispatched and advertised, but
+# unreachable - which is what focus_viewport was until it was deleted. Keep the reason.
+ORPHAN_ALLOWLIST: dict[str, str] = {
+    "ping": "answered inline by the bridge for the server's pre-flight; not a tool",
+}
+
 
 def _dict_literal_keys(text: str, brace_index: int) -> set[str]:
     """Top-level string keys of the {...} dict literal whose '{' is at brace_index."""
@@ -318,6 +326,10 @@ def main(argv: list[str] | None = None) -> int:
     missing = sorted(cmd for cmd in py_commands if cmd not in cpp_commands)
     extra = sorted(cpp for cpp in cpp_commands if cpp not in py_commands)
 
+    # An extra command with no Python caller is an orphan unless it is deliberately internal:
+    # served by the plugin but unreachable from the tool layer, so nothing can call it.
+    orphans = sorted(cmd for cmd in extra if cmd not in ORPHAN_ALLOWLIST)
+
     # Routed-but-not-dispatched: the bridge forwards the command to a handler class
     # that never implements it, so the runtime reply is 'Unknown <class> command'.
     routed = collect_routed_commands(root)
@@ -370,9 +382,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {cmd}  (sent by {sources})")
         print()
     elif extra and not args.quiet:
-        print(f"INFO: {len(extra)} C++ command(s) have no Python caller "
-              f"(allowed; internal/alias commands):")
+        print(f"INFO: {len(extra)} C++ command(s) have no Python caller:")
         for cmd in extra:
+            tag = "allowed: " + ORPHAN_ALLOWLIST[cmd] if cmd in ORPHAN_ALLOWLIST else "ORPHAN"
+            print(f"  - {cmd}  [{tag}]")
+        print()
+
+    if orphans:
+        print(f"FAIL: {len(orphans)} command(s) are served but no Python tool sends them "
+              f"(orphaned command; routed, dispatched and advertised, with no way to call it):")
+        for cmd in orphans:
             print(f"  - {cmd}")
         print()
 
@@ -422,6 +441,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Parity check FAILED: the bridge routes commands that no handler class "
               "dispatches, so those calls fail at runtime.")
         return 1
+    if orphans:
+        print("Parity check FAILED: the plugin serves commands no Python tool can reach "
+              "(orphaned command).")
+        return 1
+
     if unbacked:
         print("Parity check FAILED: get_capabilities advertises commands no handler "
               "dispatches.")
@@ -438,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Parity check PASSED: every Python command is handled by the C++ plugin, "
           "every routed command is dispatched, every served command is advertised, "
-          "and no sent parameter is unread.")
+          "no served command is orphaned, and no sent parameter is unread.")
     return 0
 
 
