@@ -44,6 +44,8 @@ CHECKS: list[tuple[str, str, tuple[str, ...]]] = [
     ("asset tool wrappers", "test_asset_tools.py", ()),
     ("comment checker unit test", "test_check_comment_length.py", ()),
     ("C++ comment length", "check_comment_length.py", ()),
+    ("workflow pin checker unit test", "test_check_workflow_pins.py", ()),
+    ("workflow pins", "check_workflow_pins.py", ()),
     ("battery runner", "test_run_checks.py", ()),
 ]
 
