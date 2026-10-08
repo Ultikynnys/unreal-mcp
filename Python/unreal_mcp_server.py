@@ -154,8 +154,6 @@ def repo_revision() -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-REPO_REVISION = repo_revision()
-
 _dirty_warned = False
 
 
@@ -173,17 +171,22 @@ def _warn_built_dirty_once(revision: str) -> None:
 def revision_mismatch_error(reported: str) -> str:
     """'' when the running plugin was built from this revision, otherwise the refusal.
 
+    The revision is read LIVE here, once per handshake, never snapshotted at import: a long-lived
+    server has to describe the checkout as it is now. Cached, committing while the server ran left
+    it demanding a commit nobody was on, which looks exactly like a value injected from outside.
+
     Three refusals, all fail-closed: a different commit, no revision field at all (a plugin
     built before the handshake), and "unknown" (a plugin built where git was unavailable).
     """
-    if not REPO_REVISION:
+    revision = repo_revision()
+    if not revision:
         return (
             "Unreal MCP revision unknown: this server cannot tell which commit it is running "
             "from (no git, or not a checkout). Set UNREAL_MCP_REVISION to the shipped revision, "
             "or run the server from a git checkout; every call fails until the two sides can be "
             "compared."
         )
-    if reported == REPO_REVISION:
+    if reported == revision:
         return ""
     if not reported:
         detail = ("the running Unreal plugin reported no revision at all, so it was built before "
@@ -194,7 +197,7 @@ def revision_mismatch_error(reported: str) -> str:
     else:
         detail = f"the running plugin reports {reported}"
     return (
-        f"Unreal MCP revision mismatch: this checkout is {REPO_REVISION}, {detail}. The running "
+        f"Unreal MCP revision mismatch: this checkout is {revision}, {detail}. The running "
         f"plugin is stale: rebuild it and restart the editor before calling again. Rebuild with "
         f'"<UE>\\Engine\\Build\\BatchFiles\\Build.bat" MCPGameProjectEditor Win64 Development '
         f'"MCPGameProject/MCPGameProject.uproject" -WaitMutex, then run '
@@ -508,8 +511,9 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
-    logger.info("This server runs from revision %s", REPO_REVISION or "UNKNOWN (no git checkout)")
-    if not REPO_REVISION:
+    startup_revision = repo_revision()
+    logger.info("This server runs from revision %s", startup_revision or "UNKNOWN (no git checkout)")
+    if not startup_revision:
         logger.warning("Cannot determine this server's revision. Set UNREAL_MCP_REVISION, or run "
                        "from a git checkout: every call is refused until the plugin and this side "
                        "can be compared.")

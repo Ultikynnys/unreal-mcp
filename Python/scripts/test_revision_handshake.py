@@ -84,8 +84,8 @@ class BridgeStampTests(unittest.TestCase):
 
 class ServerRevisionTests(unittest.TestCase):
     def test_server_revision_is_this_checkout(self):
-        self.assertRegex(server.REPO_REVISION, r"^[0-9a-f]{40}$")
-        self.assertEqual(server.REPO_REVISION, head_revision())
+        self.assertRegex(server.repo_revision(), r"^[0-9a-f]{40}$")
+        self.assertEqual(server.repo_revision(), head_revision())
 
     def test_env_override_wins(self):
         with mock.patch.dict(os.environ, {"UNREAL_MCP_REVISION": "cafebabe"}):
@@ -168,8 +168,8 @@ class PreflightOrderTests(unittest.TestCase):
 
     def test_matching_revision_dispatches_after_the_probe(self):
         conn, sent = self._connection({
-            "ping": {"revision": server.REPO_REVISION},
-            "get_capabilities": {"revision": server.REPO_REVISION,
+            "ping": {"revision": server.repo_revision()},
+            "get_capabilities": {"revision": server.repo_revision(),
                                  "status": "success", "result": {"ok": True}},
         })
         result = conn.send_command("get_capabilities")
@@ -177,7 +177,7 @@ class PreflightOrderTests(unittest.TestCase):
         self.assertEqual(sent, ["ping", "get_capabilities"])
 
     def test_ping_is_not_probed_again(self):
-        conn, sent = self._connection({"ping": {"revision": server.REPO_REVISION}})
+        conn, sent = self._connection({"ping": {"revision": server.repo_revision()}})
         conn.send_command("ping")
         self.assertEqual(sent, ["ping"])
 

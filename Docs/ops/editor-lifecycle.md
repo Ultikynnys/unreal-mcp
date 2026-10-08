@@ -45,7 +45,7 @@ server compares it against the commit it **runs** from, so drift cannot be forgo
 
 | Side | Where |
 |---|---|
-| Python server | `git rev-parse HEAD` at import (`UNREAL_MCP_REVISION` overrides it) |
+| Python server | `.git` read live on every handshake (`UNREAL_MCP_REVISION` overrides it) |
 | Plugin build | `MCP_REVISION` define from `UnrealMCP.Build.cs`, baked in at build time |
 | Loaded plugin | stamped as `revision` (plus `built_dirty`) on every reply |
 
