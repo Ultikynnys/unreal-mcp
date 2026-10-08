@@ -18,14 +18,20 @@ on:
       - "Python/**"
       - "MCPGameProject/Plugins/UnrealMCP/Source/**"
       - ".githooks/**"
+      - ".github/pins.json"
       - ".github/workflows/tool-parity.yml"
   pull_request:
     paths:
       - "Python/**"
       - "MCPGameProject/Plugins/UnrealMCP/Source/**"
       - ".githooks/**"
+      - ".github/pins.json"
       - ".github/workflows/tool-parity.yml"
   workflow_dispatch:
+  # Weekly, so an aged pin surfaces even when nobody pushes: runner images are retired and
+  # action runtimes deprecated on GitHub's schedule, not ours. See .github/pins.json.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read

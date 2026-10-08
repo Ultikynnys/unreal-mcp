@@ -27,8 +27,10 @@ DEFAULT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 # pathlib.glob has no brace expansion, so the extensions are listed separately.
 WORKFLOW_PATTERNS = (".github/workflows/*.yml", ".github/workflows/*.yaml")
 
-RUNS_ON_RE = re.compile(r"^\s*runs-on:\s*(.+?)\s*(?:#.*)?$", re.MULTILINE)
-USES_RE = re.compile(r"^\s*-?\s*uses:\s*(.+?)\s*(?:#.*)?$", re.MULTILINE)
+# runs-on / uses / version: every value in a workflow that has a shelf life. One extractor, two
+# policies: this file judges the values (floating label, moving branch) and
+# check_pin_freshness.py accounts for them against the review ledger.
+PIN_LINE_RE = re.compile(r"^\s*-?\s*(runs-on|uses|version):\s*(.+?)\s*(?:#.*)?$", re.MULTILINE)
 
 # Moving refs. A tag or SHA is fine; these are not.
 BRANCH_REFS = {"main", "master", "head", "trunk", "develop", "latest"}
@@ -42,26 +44,34 @@ def clean(value: str) -> str:
     return value
 
 
+def extract_pins(text: str) -> list[tuple[str, str]]:
+    """[(kind, value)] for every runs-on / uses / version line, in file order.
+
+    'version' does not match 'python-version' or any other suffixed key: the match starts at the
+    first non-space character of the line.
+    """
+    return [(match.group(1), clean(match.group(2))) for match in PIN_LINE_RE.finditer(text)]
+
+
 def workflow_findings(text: str) -> list[str]:
     """Human-readable problems with one workflow file (empty when it is pinned)."""
     findings: list[str] = []
-    for match in RUNS_ON_RE.finditer(text):
-        value = clean(match.group(1))
+    for kind, value in extract_pins(text):
         if "${{" in value:
             continue
-        if value.endswith("-latest"):
-            findings.append(f"floating runner label: runs-on: {value} "
-                            f"(pin the image, e.g. ubuntu-24.04)")
-    for match in USES_RE.finditer(text):
-        value = clean(match.group(1))
-        if "${{" in value or value.startswith(("./", "docker://")):
-            continue
-        if "@" not in value:
-            findings.append(f"unpinned action: uses: {value} (add @vN or a commit SHA)")
-            continue
-        ref = value.split("@", 1)[1]
-        if ref.lower() in BRANCH_REFS or ref.startswith("refs/heads/"):
-            findings.append(f"branch ref: uses: {value} (a moving branch; pin @vN or a SHA)")
+        if kind == "runs-on":
+            if value.endswith("-latest"):
+                findings.append(f"floating runner label: runs-on: {value} "
+                                f"(pin the image, e.g. ubuntu-24.04)")
+        elif kind == "uses":
+            if value.startswith(("./", "docker://")):
+                continue
+            if "@" not in value:
+                findings.append(f"unpinned action: uses: {value} (add @vN or a commit SHA)")
+                continue
+            ref = value.split("@", 1)[1]
+            if ref.lower() in BRANCH_REFS or ref.startswith("refs/heads/"):
+                findings.append(f"branch ref: uses: {value} (a moving branch; pin @vN or a SHA)")
     return findings
 
 

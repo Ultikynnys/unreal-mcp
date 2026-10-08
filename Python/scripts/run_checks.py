@@ -46,6 +46,8 @@ CHECKS: list[tuple[str, str, tuple[str, ...]]] = [
     ("C++ comment length", "check_comment_length.py", ()),
     ("workflow pin checker unit test", "test_check_workflow_pins.py", ()),
     ("workflow pins", "check_workflow_pins.py", ()),
+    ("pin freshness unit test", "test_check_pin_freshness.py", ()),
+    ("CI pin freshness", "check_pin_freshness.py", ()),
     ("battery runner", "test_run_checks.py", ()),
 ]
 

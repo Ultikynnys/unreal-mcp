@@ -58,7 +58,25 @@ was wired in. If any check fails to import, the runner prints the command that f
 | asset tool wrappers | Move/preview defaults, the ambiguous-input guard, or the redirector-cleanup ordering in the C++ moving |
 | C++ comment length | A comment block in the plugin growing past 3 lines: long comments are re-read on every view and every diff, and a comment that restates the code goes stale. One line preferred; raise or lower with `--max-lines` |
 | workflow pins | A floating `runs-on: *-latest` label or an action pinned to a moving branch: both change CI without a commit here (ubuntu-latest moved 24.04 to 26 on 2026-10-19) |
+| CI pin freshness | A pinned runner image, action or tool version passing its review date in `.github/pins.json`, or the ledger and the workflows disagreeing (a pin that is unregistered, or registered but gone) |
 | battery runner | The runner treating a non-zero check as success (it must fail closed) |
+
+## Pin shelf life
+
+A pin is a promise with a date. GitHub retires runner images, deprecates action runtimes and
+releases new action majors on its own schedule, none of which arrives as a commit here, so a
+pinned CI value eventually rots. `.github/pins.json` records each pin with the date it must be
+looked at again, and `check_pin_freshness.py` enforces it:
+
+- an overdue `review_by` fails (pre-push and CI) and names how many days late it is;
+- a pin due within 14 days prints a note without blocking;
+- the ledger must match the workflows in **both** directions: a workflow pin that is not
+  registered fails, and a registered pin that has vanished fails, so the ledger cannot rot
+  silently either.
+
+The workflow also runs weekly (`schedule`), so an aging pin is still raised in a quiet repository
+rather than waiting for the next push. To clear a failure: follow the entry's `source`, update the
+pinned value if needed, then set the next `review_by`.
 
 ## Adding a check
 

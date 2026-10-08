@@ -1,0 +1,33 @@
+{
+  "note": "Every pinned CI value, with the date by which it must be looked at again. GitHub retires runner images and deprecates action runtimes on its own schedule, so a pin has a shelf life: this ledger is what turns that into a build failure (and a weekly CI run) instead of a silent surprise. Bump review_by after checking the source; never bump it without checking.",
+  "pins": [
+    {
+      "where": ".github/workflows/tool-parity.yml",
+      "kind": "runs-on",
+      "value": "ubuntu-24.04",
+      "review_by": "2027-01-15",
+      "source": "https://github.com/actions/runner-images"
+    },
+    {
+      "where": ".github/workflows/tool-parity.yml",
+      "kind": "uses",
+      "value": "actions/checkout@v7",
+      "review_by": "2027-01-15",
+      "source": "https://github.com/actions/checkout/releases"
+    },
+    {
+      "where": ".github/workflows/tool-parity.yml",
+      "kind": "uses",
+      "value": "astral-sh/setup-uv@v10.2.0",
+      "review_by": "2027-01-15",
+      "source": "https://github.com/astral-sh/setup-uv/releases"
+    },
+    {
+      "where": ".github/workflows/tool-parity.yml",
+      "kind": "version",
+      "value": "0.12.18",
+      "review_by": "2027-01-15",
+      "source": "https://github.com/astral-sh/uv/releases"
+    }
+  ]
+}
