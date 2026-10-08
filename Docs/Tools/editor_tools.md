@@ -4,31 +4,30 @@ This document provides detailed information about the editor tools available in 
 
 ## Overview
 
-Editor tools allow you to control the Unreal Editor viewport and other editor functionality through MCP commands. These tools are particularly useful for automating tasks like focusing the camera on specific actors or locations.
+Editor tools let you control the Unreal Editor viewport, actors, levels and captures through MCP calls. They are particularly useful for automating tasks like placing the viewport camera, spawning and arranging actors, and capturing screenshots.
 
 ## Editor Tools
 
-### focus_viewport
+### set_viewport_camera
 
-Focus the viewport on a specific actor or location.
+Place and orient the active editor viewport camera.
 
 **Parameters:**
-- `target` (string, optional) - Name of the actor to focus on (if provided, location is ignored)
-- `location` (array, optional) - [X, Y, Z] coordinates to focus on (used if target is None)
-- `distance` (float, optional) - Distance from the target/location (default: 1000.0)
-- `orientation` (array, optional) - [Pitch, Yaw, Roll] for the viewport camera
+- `location` (array, required) - [X, Y, Z] world location for the viewport camera
+- `rotation` (array, required) - [Pitch, Yaw, Roll] for the viewport camera
+- `game_view` (boolean, optional) - Switch the viewport to game view
 
 **Returns:**
-- Response from Unreal Engine containing the result of the focus operation
+- Response from Unreal Engine reporting the camera change
 
 **Example:**
 ```json
 {
-  "command": "focus_viewport",
+  "command": "set_viewport_camera",
   "params": {
-    "target": "PlayerStart",
-    "distance": 500,
-    "orientation": [0, 180, 0]
+    "location": [0, 0, 500],
+    "rotation": [0, -45, 0],
+    "game_view": false
   }
 }
 ```
@@ -85,13 +84,13 @@ from unreal_mcp_server import get_unreal_connection
 # Get connection to Unreal Engine
 unreal = get_unreal_connection()
 
-# Focus on a specific actor
-focus_response = unreal.send_command("focus_viewport", {
-    "target": "PlayerStart",
-    "distance": 500,
-    "orientation": [0, 180, 0]
+# Move the viewport camera
+camera_response = unreal.send_command("set_viewport_camera", {
+    "location": [0, 0, 500],
+    "rotation": [0, -45, 0],
+    "game_view": False
 })
-print(focus_response)
+print(camera_response)
 
 # Capture a screenshot
 screenshot_response = unreal.send_command("capture_viewport_screenshot", {"filename": "my_scene.png"})
@@ -101,8 +100,7 @@ print(screenshot_response)
 ## Troubleshooting
 
 - **Command fails with "Failed to get active viewport"**: Make sure Unreal Editor is running and has an active viewport.
-- **Actor not found**: Verify that the actor name is correct and the actor exists in the current level.
-- **Invalid parameters**: Ensure that location and orientation arrays contain exactly 3 values (X, Y, Z for location; Pitch, Yaw, Roll for orientation).
+- **Invalid parameters**: Ensure that location and rotation arrays contain exactly 3 values (X, Y, Z for location; Pitch, Yaw, Roll for rotation).
 
 ## Level and console tools
 
