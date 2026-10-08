@@ -108,6 +108,9 @@ class MismatchMessageTests(unittest.TestCase):
         self.assertIn("deadbeef", message)
         self.assertIn("Build.bat", message)
         self.assertIn("editor_process.py restart", message)
+        # A commit makes the DLL stale by design, so the message must also say how to make the
+        # rebuild take effect: UBT caches rule evaluation and would otherwise answer up to date.
+        self.assertIn("UnrealMCP.Build.cs", message)
 
     def test_missing_revision_fails_closed(self):
         self.assertIn("no revision at all", server.revision_mismatch_error(""))

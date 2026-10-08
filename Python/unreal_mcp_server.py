@@ -145,6 +145,9 @@ def revision_mismatch_error(reported: str) -> str:
         f'"<UE>\\Engine\\Build\\BatchFiles\\Build.bat" MCPGameProjectEditor Win64 Development '
         f'"MCPGameProject/MCPGameProject.uproject" -WaitMutex, then run '
         f"`uv run --project Python python Python/scripts/editor_process.py restart`. "
+        f"A plain rebuild can answer 'up to date' and keep the old revision, so touch "
+        f"MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs first (or do a "
+        f"clean build). "
         f"Every call fails until the plugin matches; retrying the same call will not help."
     )
 

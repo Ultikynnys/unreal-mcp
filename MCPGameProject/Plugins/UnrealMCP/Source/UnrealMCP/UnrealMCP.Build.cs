@@ -6,10 +6,10 @@ using UnrealBuildTool;
 public class UnrealMCP : ModuleRules
 {
 	// The commit this plugin is BUILT from, baked in as a define so a stale DLL reports its own
-	// revision instead of the checkout's. UBT hashes definitions into the makefile, so moving HEAD
-	// (or dirtying the module) rebuilds this module: committing forces a rebuild, which is the point.
-	// MCP_REVISION env wins, so a plugin copied into another project can pin the revision of the
-	// repo it came from rather than reporting the hosting project's HEAD.
+	// revision instead of the checkout's. MCP_REVISION env wins, so a plugin copied into another
+	// project can pin the revision of the repo it came from rather than the hosting HEAD.
+	// Careful: UBT caches rule evaluation, so a bare rebuild after a commit says "up to date" and
+	// keeps the old revision. Touch this file (or a clean build) to refresh it.
 	private string BuildRevision()
 	{
 		string FromEnv = System.Environment.GetEnvironmentVariable("MCP_REVISION");

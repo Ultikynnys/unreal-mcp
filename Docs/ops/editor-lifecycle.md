@@ -68,6 +68,7 @@ launch another editor: reap, rebuild, restart.
 
 ```bash
 uv run --project Python python Python/scripts/editor_process.py reap
+# a commit made the DLL stale: touch UnrealMCP.Build.cs so UBT re-evaluates, or the build says up to date
 "C:\Program Files\Epic Games\UE_5.6\Engine\Build\BatchFiles\Build.bat" MCPGameProjectEditor Win64 Development MCPGameProject/MCPGameProject.uproject -WaitMutex -NoHotReloadFromIDE
 uv run --project Python python Python/scripts/editor_process.py restart --wait 180
 ```
@@ -75,8 +76,13 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 The reap is not optional: a running editor holds `UnrealEditor-UnrealMCP.dll`, so the link step
 fails with `LNK1104: cannot open file ... being used by another process`.
 
-Two consequences worth knowing. Committing moves the server's revision immediately, so the
-rebuild is forced on the next call until the plugin matches - that is the intent. And a plugin
+Two consequences worth knowing. Committing moves the server's revision immediately, so every call is
+refused until the plugin is rebuilt - that is the intent, and nothing should soften it. What the
+rebuild must do is actually refresh the baked revision, and a plain rebuild often will not: UBT
+caches rule evaluation, so `Build.bat` answers `Target is up to date` and keeps the old revision.
+Touch `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs` (any edit, even
+whitespace) before rebuilding, or do a clean build; only then does the makefile invalidate and the
+new revision get baked in. And a plugin
 **copied into another project** records that project's HEAD, which cannot match this repo: build
 the copy with `MCP_REVISION=<this repo's HEAD>`, or set `UNREAL_MCP_REVISION` on the server. A
 plugin built from a dirty tree is reported (`built_dirty`) and logged as a warning rather than
