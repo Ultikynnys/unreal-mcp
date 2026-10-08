@@ -14,14 +14,16 @@ different project.
 ```bash
 uv run --project Python python Python/scripts/editor_process.py status
 uv run --project Python python Python/scripts/editor_process.py reap
+uv run --project Python python Python/scripts/editor_process.py reap --orphans-only
 uv run --project Python python Python/scripts/editor_process.py clean
 uv run --project Python python Python/scripts/editor_process.py restart --wait 180
 ```
 
 | Command | What it does |
 |---|---|
-| `status` | Lists every `UnrealEditor.exe` (pid, start time, command line) tagged `ours`/`foreign`; probes `127.0.0.1:55557` and reports `ok`/`wedged`/`down`; summarises `Saved/Crashes`; reports the restore marker. `--json` for machine use. |
-| `reap` | Force-kills this project's editors (all editors with `--all`) and confirms they are gone. |
+| `status` | Lists every editor and editor-helper process (pid, start time, command line); editors tagged `ours`/`foreign`, helpers tagged `ok (owner <pid>)`/`ORPHAN (owner gone)`. Probes `127.0.0.1:55557` and reports `ok`/`wedged`/`down`; summarises `Saved/Crashes`; reports the restore marker and the orphan count. `--json` for machine use. |
+| `reap` | Force-kills this project's editors plus any orphaned helpers (every editor with `--all`) and confirms they are gone. |
+| `reap --orphans-only` | Kills only orphaned helpers, leaving a working editor and its helpers alone. |
 | `clean` | Removes `Saved/Autosaves/PackageRestoreData.json` (the file that raises the "restore unsaved files" modal on the next launch) and lists crash reports; `--prune-crashes` deletes them. |
 | `restart` | `reap` -> `clean` -> launch one unattended editor -> poll until the bridge answers `ping`. |
 
@@ -33,6 +35,15 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 
 `ok` / `wedged` / `down` distinguishes "dead" from "busy": a busy editor still answers
 `ping`, a crashed one has no process and no listener.
+
+## Helper processes outlive a crash
+
+An editor also spawns helpers: `CrashReportClientEditor.exe` (the crash-reporter window) and
+`UnrealTraceServer.exe`. They carry no project path, so they are attributed by the pid they
+monitor/sponsor (`-MONITOR=<pid>` or `--sponsor <pid>`). When that owner is gone the helper is
+an **orphan** - a leftover window from a dead editor - and `status` reports it as
+`ORPHAN (owner gone)`. `reap` (default) and `reap --orphans-only` both remove it; helpers whose
+owner is alive are left untouched.
 
 ## Why not just retry
 

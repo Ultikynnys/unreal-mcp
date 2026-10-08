@@ -42,18 +42,76 @@ class ParseProcessesTests(unittest.TestCase):
         self.assertEqual(editor_process.parse_processes(json.dumps({"CommandLine": OURS})), [])
 
 
-class SelectProjectEditorsTests(unittest.TestCase):
-    def test_selects_only_ours(self):
-        procs = [{"pid": 10, "command_line": OURS}, {"pid": 11, "command_line": FOREIGN}]
-        self.assertEqual(editor_process.select_project_editors(procs, UPROJECT), [10])
+class ClassifyProcessTests(unittest.TestCase):
+    @staticmethod
+    def _proc(pid, name, cmd):
+        return {"pid": pid, "name": name, "created": "", "command_line": cmd}
 
-    def test_matching_is_case_and_separator_insensitive(self):
-        procs = [{"pid": 10, "command_line": r'"...\unrealeditor.exe" C:/PROJ/mcpgameproject/MCPGameProject.uproject'}]
-        self.assertEqual(editor_process.select_project_editors(procs, UPROJECT), [10])
+    def test_editor_ours_vs_foreign(self):
+        procs = [self._proc(10, "UnrealEditor.exe", OURS), self._proc(11, "UnrealEditor.exe", FOREIGN)]
+        tagged = editor_process.classify_processes(procs, UPROJECT, {10, 11})
+        self.assertEqual([(p["pid"], p["kind"], p["ours"]) for p in tagged],
+                         [(10, "editor", True), (11, "editor", False)])
 
-    def test_no_editors_selected_when_none_match(self):
-        procs = [{"pid": 11, "command_line": FOREIGN}]
-        self.assertEqual(editor_process.select_project_editors(procs, UPROJECT), [])
+    def test_editor_match_is_case_and_separator_insensitive(self):
+        procs = [self._proc(10, "UnrealEditor.exe",
+                            r'"x\UnrealEditor.exe" C:/PROJ/mcpgameproject/MCPGameProject.uproject')]
+        self.assertTrue(editor_process.classify_processes(procs, UPROJECT, {10})[0]["ours"])
+
+    def test_helper_with_live_owner_is_not_stale(self):
+        procs = [self._proc(20, "CrashReportClientEditor.exe", "x -MONITOR=10 -unattended")]
+        tagged = editor_process.classify_processes(procs, UPROJECT, {10, 20})[0]
+        self.assertEqual(tagged["owner"], 10)
+        self.assertFalse(tagged["stale"])
+
+    def test_helper_with_dead_owner_is_orphan(self):
+        procs = [self._proc(21, "CrashReportClientEditor.exe", "x -MONITOR=999 -RespawnedInstance")]
+        self.assertTrue(editor_process.classify_processes(procs, UPROJECT, {21})[0]["stale"])
+
+    def test_helper_without_owner_is_orphan(self):
+        procs = [self._proc(22, "UnrealTraceServer.exe", "daemon -d")]
+        tagged = editor_process.classify_processes(procs, UPROJECT, {22})[0]
+        self.assertIsNone(tagged["owner"])
+        self.assertTrue(tagged["stale"])
+
+
+class OwnerPidTests(unittest.TestCase):
+    def test_monitor_flag(self):
+        self.assertEqual(editor_process.parse_owner_pid("x -MONITOR=33752 -y"), 33752)
+
+    def test_sponsor_flag_variants(self):
+        self.assertEqual(editor_process.parse_owner_pid("daemon -d --sponsor 28956"), 28956)
+        self.assertEqual(editor_process.parse_owner_pid("daemon --sponsor=28956"), 28956)
+
+    def test_none_when_absent(self):
+        self.assertIsNone(editor_process.parse_owner_pid("no owner here"))
+
+
+class ReapTargetTests(unittest.TestCase):
+    def test_default_targets_our_editors_and_stale_helpers_only(self):
+        tagged = [
+            {"pid": 10, "kind": "editor", "ours": True, "stale": False},
+            {"pid": 11, "kind": "editor", "ours": False, "stale": False},
+            {"pid": 20, "kind": "helper", "ours": False, "stale": True},
+            {"pid": 21, "kind": "helper", "ours": False, "stale": False},
+        ]
+        self.assertEqual(editor_process.select_reap_targets(tagged), [10, 20])
+
+    def test_all_targets_everything(self):
+        tagged = [
+            {"pid": 10, "kind": "editor", "ours": True, "stale": False},
+            {"pid": 11, "kind": "editor", "ours": False, "stale": False},
+            {"pid": 21, "kind": "helper", "ours": False, "stale": False},
+        ]
+        self.assertEqual(editor_process.select_reap_targets(tagged, reap_all=True), [10, 11, 21])
+
+    def test_orphans_only_selects_stale_helpers(self):
+        tagged = [
+            {"pid": 10, "kind": "editor", "ours": True, "stale": False},
+            {"pid": 20, "kind": "helper", "ours": False, "stale": True},
+            {"pid": 21, "kind": "helper", "ours": False, "stale": False},
+        ]
+        self.assertEqual(editor_process.select_orphan_helpers(tagged), [20])
 
 
 class CrashReportTests(unittest.TestCase):

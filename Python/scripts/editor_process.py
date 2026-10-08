@@ -6,13 +6,16 @@ launches another one, the result is a pile of orphaned windows and a port that a
 zombie process may still own. This script is the single, project-scoped answer:
 
     status    what editors exist, which are ours, is the bridge answering, any crashes
-    reap      force-kill our editors (or all editors with --all) so nothing is orphaned
+    reap      force-kill our editors and any orphaned editor helpers, so nothing is
+              left behind (every editor with --all)
     clean     remove the crash-recovery marker that raises the "restore unsaved files"
               modal on the next launch, and list/prune crash reports
     restart   reap -> clean -> launch exactly one editor -> wait for the bridge to answer
 
 Reaping is scoped by the project's .uproject appearing in the editor command line, so
-it never kills an editor someone opened on a different project.
+it never kills an editor someone opened on a different project. Editor helpers (the
+crash reporter, the trace server) carry no project path; they are attributed by the pid
+they monitor, and only orphaned ones are killed.
 
 The OS-touching functions are thin; the parsing/filtering helpers are pure and
 unit-tested in test_editor_process.py.
@@ -38,6 +41,12 @@ DEFAULT_EDITOR = pathlib.Path(
 )
 SERVER_PY = REPO_ROOT / "Python" / "unreal_mcp_server.py"
 HOST, PORT = "127.0.0.1", 55557
+
+# Unreal spawns helper processes around an editor, and they outlive it when it crashes
+# (the crash-reporter window is the common leftover). They carry no project path, so
+# they are attributed by the pid they monitor/sponsor instead.
+EDITOR_PROCESS_NAMES = ("UnrealEditor.exe", "UnrealEditor-Cmd.exe")
+HELPER_PROCESS_NAMES = ("CrashReportClientEditor.exe", "UnrealTraceServer.exe")
 
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested without a live editor)
@@ -67,6 +76,7 @@ def parse_processes(raw: str) -> list[dict]:
             continue
         result.append({
             "pid": int(pid),
+            "name": str(item.get("Name") or ""),
             "created": str(item.get("CreationDate") or ""),
             "command_line": str(item.get("CommandLine") or ""),
         })
@@ -85,10 +95,60 @@ def format_cim_date(value: str) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(match.group(1)) / 1000.0))
 
 
-def select_project_editors(processes: list[dict], uproject: pathlib.Path) -> list[int]:
-    """PIDs of editors whose command line opens `uproject` (never a foreign project)."""
+def parse_owner_pid(command_line: str) -> int | None:
+    """Pid a helper is attached to: `-MONITOR=<pid>` (crash reporter) or `--sponsor <pid>`."""
+    for pattern in (r"-MONITOR=(\d+)", r"--sponsor[=\s]+(\d+)"):
+        match = re.search(pattern, command_line or "", re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def is_editor_name(name: str) -> bool:
+    return name.lower() in {n.lower() for n in EDITOR_PROCESS_NAMES}
+
+
+def classify_processes(processes: list[dict], uproject: pathlib.Path, alive_pids: set[int]) -> list[dict]:
+    """Tag each process: kind, ours, owner, and whether it is a stale orphan.
+
+    An editor is 'ours' when its command line names this project. A helper has no
+    project path, so it is attributed by the pid it monitors/sponsors: a helper whose
+    owner is gone (or unknown) is a stale orphan - the leftover window from a crash.
+    """
     needle = _norm(uproject)
-    return [p["pid"] for p in processes if needle in _norm(p["command_line"])]
+    classified = []
+    for proc in processes:
+        name = proc.get("name", "")
+        editor = is_editor_name(name)
+        owner = None if editor else parse_owner_pid(proc.get("command_line", ""))
+        classified.append({
+            "pid": proc["pid"],
+            "name": name,
+            "created": proc.get("created", ""),
+            "command_line": proc.get("command_line", ""),
+            "kind": "editor" if editor else "helper",
+            "ours": needle in _norm(proc.get("command_line", "")),
+            "owner": owner,
+            "stale": (not editor) and (owner is None or owner not in alive_pids),
+        })
+    return classified
+
+
+def select_orphan_helpers(classified: list[dict]) -> list[int]:
+    """Pids of orphaned helpers only - what `reap --orphans-only` clears."""
+    return [p["pid"] for p in classified if p["kind"] == "helper" and p["stale"]]
+
+
+def select_reap_targets(classified: list[dict], reap_all: bool = False) -> list[int]:
+    """Pids to kill: our editors (every editor with reap_all) plus stale orphan helpers."""
+    targets = []
+    for proc in classified:
+        if proc["kind"] == "editor":
+            if reap_all or proc["ours"]:
+                targets.append(proc["pid"])
+        elif reap_all or proc["stale"]:
+            targets.append(proc["pid"])
+    return targets
 
 
 def newest_crash(dir_names_with_mtime: list[tuple[str, float]]) -> tuple[str, float] | None:
@@ -121,10 +181,13 @@ def _powershell(command: str) -> str:
         return ""
 
 
-def list_editors() -> list[dict]:
+def list_unreal_processes() -> list[dict]:
+    """Every editor and editor-helper process, so orphans cannot hide."""
+    names = list(EDITOR_PROCESS_NAMES) + list(HELPER_PROCESS_NAMES)
+    where = " OR ".join(f"Name='{name}'" for name in names)
     raw = _powershell(
-        "Get-CimInstance Win32_Process -Filter \"Name='UnrealEditor.exe'\" | "
-        "Select-Object ProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
+        f"Get-CimInstance Win32_Process -Filter \"{where}\" | "
+        "Select-Object ProcessId,Name,CreationDate,CommandLine | ConvertTo-Json -Compress"
     )
     return parse_processes(raw)
 
@@ -168,7 +231,7 @@ def crash_report_dirs(crashes_dir: pathlib.Path) -> list[dict]:
     return sorted(reports, key=lambda item: item["mtime"], reverse=True)
 
 
-def kill_editor(pid: int) -> bool:
+def kill_process(pid: int) -> bool:
     _powershell(f"taskkill /PID {int(pid)} /F | Out-Null")
     return True
 
@@ -189,16 +252,20 @@ def launch_editor(editor: pathlib.Path, uproject: pathlib.Path) -> subprocess.Po
 
 
 def cmd_status(args) -> int:
-    editors = list_editors()
-    ours = set(select_project_editors(editors, args.uproject))
+    processes = list_unreal_processes()
+    classified = classify_processes(processes, args.uproject, {p["pid"] for p in processes})
     reports = crash_report_dirs(args.uproject.parent / "Saved" / "Crashes")
     restore = (args.uproject.parent / "Saved" / "Autosaves" / "PackageRestoreData.json").exists()
     bridge = probe_bridge()
 
+    editors = [p for p in classified if p["kind"] == "editor"]
+    helpers = [p for p in classified if p["kind"] == "helper"]
+
     if args.json:
         print(json.dumps({
-            "editors": [dict(e, ours=e["pid"] in ours) for e in editors],
-            "ours": sorted(ours),
+            "processes": classified,
+            "editors_ours": [p["pid"] for p in editors if p["ours"]],
+            "orphans": [p["pid"] for p in helpers if p["stale"]],
             "bridge": bridge,
             "crash_reports": reports,
             "restore_data_present": restore,
@@ -209,30 +276,56 @@ def cmd_status(args) -> int:
     if not editors:
         print("editors: none")
     for e in editors:
-        tag = "ours" if e["pid"] in ours else "foreign"
-        print(f"editor: pid={e['pid']} {tag} started={format_cim_date(e['created'])}")
+        tag = "ours" if e["ours"] else "foreign"
+        print(f"editor: pid={e['pid']} {e['name']} {tag} started={format_cim_date(e['created'])}")
+    for h in helpers:
+        state = "ORPHAN (owner gone)" if h["stale"] else f"ok (owner {h['owner']})"
+        print(f"helper: pid={h['pid']} {h['name']} {state}")
     newest = newest_crash([(r["name"], r["mtime"]) for r in reports])
     print(f"crash reports: {len(reports)}" + (f" (newest: {newest[0]})" if newest else ""))
+    print(f"orphaned helpers: {sum(1 for h in helpers if h['stale'])}")
     print(f"restore marker present: {restore}")
     return 0
 
 
 def cmd_reap(args) -> int:
-    editors = list_editors()
-    targets = [e["pid"] for e in editors] if args.all else select_project_editors(editors, args.uproject)
+    processes = list_unreal_processes()
+    classified = classify_processes(processes, args.uproject, {p["pid"] for p in processes})
+    by_pid = {p["pid"]: p for p in classified}
+    if args.orphans_only:
+        # Clear the leftovers without touching a working editor (and leave helpers that
+        # belong to a live editor alone).
+        targets = select_orphan_helpers(classified)
+    else:
+        targets = select_reap_targets(classified, reap_all=args.all)
     if not targets:
-        print(f"reap: no {'editors' if args.all else 'project editors'} to kill")
+        print("reap: nothing to kill")
         return 0
     for pid in targets:
-        kill_editor(pid)
-        print(f"reap: killed pid {pid}")
-    # Confirm they are actually gone.
-    time.sleep(1.5)
-    still = {e["pid"] for e in list_editors()} & set(targets)
+        proc = by_pid[pid]
+        if proc["kind"] == "editor":
+            reason = "editor"
+        else:
+            reason = "orphan helper" if proc["stale"] else "helper"
+        kill_process(pid)
+        print(f"reap: killed pid {pid} ({proc['name']}, {reason})")
+
+    time.sleep(2.0)
+    # Killing an editor can leave its own crash reporter orphaned; sweep those too.
+    remaining = list_unreal_processes()
+    second = classify_processes(remaining, args.uproject, {p["pid"] for p in remaining})
+    extra = [p["pid"] for p in second
+             if p["kind"] == "helper" and p["pid"] not in targets and (args.all or p["stale"])]
+    for pid in extra:
+        kill_process(pid)
+        print(f"reap: killed pid {pid} (orphaned helper)")
+
+    time.sleep(1.0)
+    still = {p["pid"] for p in list_unreal_processes()} & set(targets + extra)
     if still:
         print(f"reap: WARNING still alive: {sorted(still)}")
         return 1
-    print(f"reap: {len(targets)} editor(s) gone")
+    print(f"reap: {len(targets) + len(extra)} process(es) gone")
     return 0
 
 
@@ -258,7 +351,7 @@ def cmd_restart(args) -> int:
     if not args.editor.exists():
         print(f"restart: editor binary not found: {args.editor}")
         return 1
-    cmd_reap(argparse.Namespace(uproject=args.uproject, all=False))
+    cmd_reap(argparse.Namespace(uproject=args.uproject, all=False, orphans_only=False))
     cmd_clean(argparse.Namespace(uproject=args.uproject, prune_crashes=False))
     launch_editor(args.editor, args.uproject)
     print(f"restart: launched {args.editor.name} (waiting up to {args.wait}s for the bridge)")
@@ -282,8 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     p_status.add_argument("--json", action="store_true")
     p_status.set_defaults(func=cmd_status)
 
-    p_reap = sub.add_parser("reap", help="force-kill editors so none are orphaned")
-    p_reap.add_argument("--all", action="store_true", help="kill every UnrealEditor, not just this project's")
+    p_reap = sub.add_parser("reap", help="force-kill editors and orphaned helpers")
+    p_reap.add_argument("--all", action="store_true", help="kill every editor, not just this project's")
+    p_reap.add_argument("--orphans-only", action="store_true",
+                        help="kill only orphaned helpers; leave live editors running")
     p_reap.set_defaults(func=cmd_reap)
 
     p_clean = sub.add_parser("clean", help="clear the restore marker and report crash dirs")
