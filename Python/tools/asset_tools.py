@@ -4,9 +4,9 @@ Asset organization tools for Unreal MCP.
 First-class primitives for moving/renaming assets and clearing the
 ObjectRedirectors UE leaves behind - the "sorting" operations an agent would
 otherwise have to script through execute_python (slow, blind, and unable to fix
-references). move_assets / fixup_redirectors / resave_packages run as
-asynchronous jobs on the Unreal side and are polled with get_job_status, so a long
-operation never blocks a single socket read.
+references). move_assets / move_folder / fixup_redirectors / resave_packages run
+as asynchronous jobs polled with get_job_status. Native rename/fixup calls can
+still block the editor thread for the duration of an individual operation.
 
 Note: the project rule in .cursor/rules/tools.mdc applies here (no Any/object/
 Optional/Union parameter types; defaults written as `x: T = None` and resolved in
@@ -26,7 +26,7 @@ def register_asset_tools(mcp: FastMCP):
 
     @mcp.tool()
     def get_job_status(ctx: Context, job_id: str) -> Dict[str, Any]:
-        """Poll a long-running asset job started by move_assets / fixup_redirectors / resave_packages.
+        """Poll an asset job started by move_assets / move_folder / fixup_redirectors / resave_packages.
 
         Returns {job_id, kind, state, phase, done, total, error, items, log}. state is one
         of queued | running | done | failed, and done/total is the progress counter.
@@ -109,15 +109,21 @@ def register_asset_tools(mcp: FastMCP):
         ctx: Context,
         moves: List[Dict[str, Any]] = None,
         assets: List[str] = None,
-        destination_path: str = None
+        destination_path: str = None,
+        dry_run: bool = False,
+        fixup_redirectors: bool = True
     ) -> Dict[str, Any]:
-        """Move/rename assets in batch. Runs asynchronously - returns a job_id; poll get_job_status.
+        """Move/rename assets, saving and fixing source redirectors after each move.
+
+        Preflights the whole batch. dry_run returns the validated mapping without changes.
+        Otherwise returns a job_id; poll get_job_status until done or failed.
+        Stops on the first rename/save/cleanup failure; earlier moves are not rolled back.
 
         Provide either:
         - moves: [{"source": "/Game/Old/Foo", "destination": "/Game/New/Foo"}, ...], or
         - assets: ["/Game/Old/Foo", ...] together with destination_path (each keeps its name).
 
-        UE leaves an ObjectRedirector at each old path; clear them with fixup_redirectors.
+        Cleanup is automatic unless fixup_redirectors=False. Never move .uasset files on disk.
 
         Example: move_assets(assets=["/Game/Weapons/Pistol/Pistol_01"], destination_path="/Game/Art/Weapons/Pistol")
         """
@@ -126,7 +132,9 @@ def register_asset_tools(mcp: FastMCP):
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params: Dict[str, Any] = {}
+            if moves is not None and (assets is not None or destination_path is not None):
+                return {"success": False, "message": "Provide only moves, or assets with destination_path."}
+            params: Dict[str, Any] = {"dry_run": dry_run, "fixup_redirectors": fixup_redirectors}
             if moves:
                 params["moves"] = moves
             if assets:
@@ -138,6 +146,36 @@ def register_asset_tools(mcp: FastMCP):
             return unreal.send_command("move_assets", params)
         except Exception as e:
             logger.error(f"Error moving assets: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def move_folder(
+        ctx: Context,
+        source_path: str,
+        destination_path: str,
+        recursive: bool = True,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Move folder contents preserving subfolders, fixing redirectors after each asset.
+
+        Use /Game paths, not filesystem paths. dry_run previews all moves and collisions.
+        Excludes existing redirectors; never deletes source folders or overwrites assets.
+        Returns a job_id (kind move_assets); poll get_job_status until done or failed.
+        Stops on cleanup failure without rolling back earlier moves. Nested folders are rejected.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            return unreal.send_command("move_folder", {
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "recursive": recursive,
+                "dry_run": dry_run
+            })
+        except Exception as e:
+            logger.error(f"Error moving folder: {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()

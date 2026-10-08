@@ -305,6 +305,7 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("list_redirectors") ||
         CommandType == TEXT("fixup_redirectors") ||
         CommandType == TEXT("move_assets") ||
+        CommandType == TEXT("move_folder") ||
         CommandType == TEXT("resave_packages") ||
         CommandType == TEXT("recover_editor"))
     {

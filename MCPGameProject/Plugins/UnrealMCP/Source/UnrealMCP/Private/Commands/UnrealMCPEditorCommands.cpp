@@ -44,6 +44,9 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/Guid.h"
 #include "UObject/ObjectRedirector.h"
+#include "ObjectTools.h"
+#include "Misc/PackageName.h"
+#include "UObject/StrongObjectPtr.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "AssetImportTask.h"
@@ -78,6 +81,9 @@ namespace
     // ---------------------------------------------------------------------
     // Asset organization helpers
     // ---------------------------------------------------------------------
+
+    bool AssetMutationBusy();
+    bool FixAndVerifyRedirector(const FString& PackageName, bool bDelete, FString& Error, bool bApplyFixup = true);
 
     struct FAssetMoveRequest
     {
@@ -213,11 +219,7 @@ namespace
     // ---------------------------------------------------------------------
     // Generic async jobs (polled via get_job_status)
     //
-    // Batch operations that can outlast a single socket read - asset moves,
-    // redirector fixup, package resaves - register a job here and run a bounded
-    // slice of work per core-ticker tick. The game thread (and therefore the MCP
-    // socket) stays responsive, and the caller polls get_job_status for progress
-    // instead of blocking on one long read.
+    // Native asset operations may block a tick; jobs let callers poll between operations.
     // ---------------------------------------------------------------------
     struct FMcpJobState
     {
@@ -509,6 +511,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("list_redirectors")) { return HandleListRedirectors(Params); }
     else if (CommandType == TEXT("fixup_redirectors")) { return HandleFixupRedirectors(Params); }
     else if (CommandType == TEXT("move_assets")) { return HandleMoveAssets(Params); }
+    else if (CommandType == TEXT("move_folder")) { return HandleMoveFolder(Params); }
     else if (CommandType == TEXT("resave_packages")) { return HandleResavePackages(Params); }
     else if (CommandType == TEXT("recover_editor")) { return HandleRecoverEditor(Params); }
 
@@ -574,7 +577,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("import_asset"), TEXT("get_import_status"),
         TEXT("apply_blueprint_plan"), TEXT("get_plan_status"),
         TEXT("get_job_status"), TEXT("list_redirectors"), TEXT("fixup_redirectors"),
-        TEXT("move_assets"), TEXT("resave_packages"),
+        TEXT("move_assets"), TEXT("move_folder"), TEXT("resave_packages"),
         TEXT("delete_blueprint_node"), TEXT("clear_blueprint_graph"),
         TEXT("disconnect_blueprint_pin"), TEXT("get_blueprint_graphs"),
         TEXT("set_blueprint_node_pin_default"),
@@ -1780,6 +1783,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleListRedirectors(const TS
 // do (no fix_references). Runs as an async job; poll get_job_status.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFixupRedirectors(const TSharedPtr<FJsonObject>& Params)
 {
+    if (AssetMutationBusy()) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another asset mutation job is running")); }
     FString Path = TEXT("/Game");
     Params->TryGetStringField(TEXT("path"), Path);
     bool bRecursive = true;
@@ -1798,43 +1802,27 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFixupRedirectors(const T
     TArray<FAssetData> Assets;
     ARModule.Get().GetAssets(Filter, Assets);
 
-    TSharedPtr<TArray<UObjectRedirector*>> Pending = MakeShared<TArray<UObjectRedirector*>>();
-    for (const FAssetData& Asset : Assets)
-    {
-        UPackage* Pkg = LoadPackage(nullptr, *Asset.PackageName.ToString(), LOAD_None);
-        if (UObjectRedirector* Redirector = Pkg ? FindObject<UObjectRedirector>(Pkg, *Asset.AssetName.ToString()) : nullptr)
-        {
-            Pending->Add(Redirector);
-        }
-    }
+    auto Pending = MakeShared<TArray<FString>>();
+    for (const FAssetData& Asset : Assets) { Pending->Add(Asset.PackageName.ToString()); }
 
     const FString JobId = CreateMcpJob(TEXT("fixup_redirectors"), Pending->Num());
     const ERedirectFixupMode Mode = bDeleteRedirectors ? ERedirectFixupMode::DeleteFixedUpRedirectors : ERedirectFixupMode::LeaveFixedUpRedirectors;
 
     RunJobChunked(JobId, [Pending, Mode, BatchSize](const TSharedPtr<FMcpJobState>& Job) -> bool
     {
-        FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-        IAssetTools& AssetTools = AssetToolsModule.Get();
-
         int32 ProcessedThisTick = 0;
         while (Job->Done < Pending->Num() && ProcessedThisTick < BatchSize)
         {
-            UObjectRedirector* Redirector = (*Pending)[Job->Done];
-            const bool bAlive = Redirector && IsValid(Redirector);
-            // Capture the name before fixup: delete mode frees the redirector.
-            const FString Name = bAlive ? Redirector->GetPathName() : FString(TEXT("<gone>"));
-
-            if (bAlive)
+            const FString& Name = (*Pending)[Job->Done];
+            FString Error;
+            if (!FixAndVerifyRedirector(Name, Mode == ERedirectFixupMode::DeleteFixedUpRedirectors, Error))
             {
-                TArray<UObjectRedirector*> One;
-                One.Add(Redirector);
-                AssetTools.FixupReferencers(One, /*bCheckoutDialogPrompt=*/false, Mode);
-                Job->Items.Add(FString::Printf(TEXT("%s: fixed"), *Name));
+                Job->State = TEXT("failed");
+                Job->Error = Name + TEXT(": ") + Error;
+                Job->Items.Add(Job->Error);
+                return false;
             }
-            else
-            {
-                Job->Items.Add(FString::Printf(TEXT("%s: skipped (already fixed)"), *Name));
-            }
+            Job->Items.Add(Name + TEXT(": cleanup verified"));
 
             Job->Done++;
             ProcessedThisTick++;
@@ -1852,89 +1840,338 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFixupRedirectors(const T
     return ResultObj;
 }
 
-// move_assets: batch move/rename of assets (the "sorting" primitive). Each move is a
-// single IAssetTools::RenameAssets call - one per tick so progress advances and no one
-// long call blocks the socket. Accepts either explicit "moves" [{source, destination}]
-// or "assets" + "destination_path" (each asset keeps its name). Runs as an async job;
-// UE leaves an ObjectRedirector at each old path - clear them with fixup_redirectors.
-TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TSharedPtr<FJsonObject>& Params)
+namespace
 {
-    TSharedPtr<TArray<FAssetMoveRequest>> Pending = MakeShared<TArray<FAssetMoveRequest>>();
-
-    const TArray<TSharedPtr<FJsonValue>>* MovesArr = nullptr;
-    if (Params->TryGetArrayField(TEXT("moves"), MovesArr) && MovesArr)
+    bool AssetMutationBusy()
     {
-        for (const TSharedPtr<FJsonValue>& Value : *MovesArr)
+        FScopeLock Lock(&GMcpJobsMutex);
+        for (const auto& Entry : GMcpJobs)
         {
-            const TSharedPtr<FJsonObject>* MoveObj = nullptr;
-            if (!Value.IsValid() || !Value->TryGetObject(MoveObj) || !MoveObj) { continue; }
-            FAssetMoveRequest Req;
-            FString Destination;
-            (*MoveObj)->TryGetStringField(TEXT("source"), Req.Source);
-            (*MoveObj)->TryGetStringField(TEXT("destination"), Destination);
-            if (Req.Source.IsEmpty() || Destination.IsEmpty()) { continue; }
-            if (!SplitObjectPath(Destination, Req.NewPackagePath, Req.NewName)) { continue; }
-            Pending->Add(Req);
+            const auto& Job = Entry.Value;
+            if ((Job->Kind == TEXT("move_assets") || Job->Kind == TEXT("fixup_redirectors") || Job->Kind == TEXT("resave_packages")) &&
+                (Job->State == TEXT("queued") || Job->State == TEXT("running"))) { return true; }
         }
+        return false;
     }
 
-    if (Pending->Num() == 0)
+    bool NormalizeAssetPackage(const FString& Input, FString& Package)
     {
-        FString DestinationPath;
-        Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
-        const TArray<TSharedPtr<FJsonValue>>* AssetsArr = nullptr;
-        if (Params->TryGetArrayField(TEXT("assets"), AssetsArr) && AssetsArr && !DestinationPath.IsEmpty())
+        Package = Input.TrimStartAndEnd();
+        if (Package.Contains(TEXT(":"))) { return false; }
+        FString ObjectName, PackagePart;
+        if (Package.Split(TEXT("."), &PackagePart, &ObjectName))
         {
-            for (const TSharedPtr<FJsonValue>& Value : *AssetsArr)
+            Package = PackagePart;
+            if (ObjectName != FPackageName::GetLongPackageAssetName(Package)) { return false; }
+        }
+        FString Filename;
+        return FPackageName::IsValidLongPackageName(Package) && FPackageName::GetLongPackagePath(Package) != TEXT("") &&
+            FPackageName::TryConvertLongPackageNameToFilename(Package, Filename);
+    }
+
+    bool PackageOccupied(const FString& Package)
+    {
+        TArray<FAssetData> Assets;
+        FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssetsByPackageName(FName(*Package), Assets);
+        return Assets.Num() > 0 || FindPackage(nullptr, *Package) || FPackageName::DoesPackageExist(Package);
+    }
+
+    // Dialog-free equivalent of IAssetTools::FixupReferencers: that API always ends in a
+    // modal "Redirector Update Report" dialog, which blocks unattended restructuring, and
+    // ObjectTools::ConsolidateObjects raises its own "Critical Failure" dialog when the
+    // stale redirector resists deletion. Never call either from job code. The sequence
+    // here reproduces their post-dialog outcome: rewire in-memory referencers to the
+    // destination, SAVE those referencers, then collect garbage and delete the stale
+    // redirector. Saving before deletion is what lets the loaded-level/blueprint case
+    // release the old references so the redirector package can go away.
+    bool FixAndVerifyRedirector(const FString& PackageName, bool bDelete, FString& Error, bool bApplyFixup)
+    {
+        IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+        const FString Name = FPackageName::GetLongPackageAssetName(PackageName);
+
+        UPackage* Package = FindPackage(nullptr, *PackageName);
+        if (!Package && FPackageName::DoesPackageExist(PackageName)) { Package = LoadPackage(nullptr, *PackageName, LOAD_None); }
+        UObjectRedirector* Redirector = Package ? FindObject<UObjectRedirector>(Package, *Name) : nullptr;
+        if (!Redirector)
+        {
+            TArray<FAssetData> Registered;
+            AR.GetAssetsByPackageName(FName(*PackageName), Registered);
+            if (Registered.Num() > 0 || FPackageName::DoesPackageExist(PackageName))
             {
-                if (!Value.IsValid()) { continue; }
-                FAssetMoveRequest Req;
-                Req.Source = Value->AsString();
-                FString OldPackagePath, Name;
-                if (!SplitObjectPath(Req.Source, OldPackagePath, Name)) { continue; }
-                Req.NewPackagePath = DestinationPath;
-                Req.NewName = Name;
-                Pending->Add(Req);
+                Error = TEXT("Source package exists but its redirector could not be loaded");
+                return false;
             }
         }
+        else if (bApplyFixup)
+        {
+            // Keep-alives guard only the rewire and save: a TStrongObjectPtr left in
+            // scope roots the redirector, and a rooted object can never be collected,
+            // so these MUST die before the CollectGarbage below.
+            {
+                TStrongObjectPtr<UObjectRedirector> KeepAlive(Redirector);
+                TArray<FName> Referencers;
+                AR.WaitForPackage(PackageName);
+                AR.GetReferencers(FName(*PackageName), Referencers);
+                if (Referencers.Num() > 0)
+                {
+                    UObject* Destination = Redirector->DestinationObject;
+                    if (!Destination)
+                    {
+                        Error = TEXT("Redirector has no destination object to consolidate onto");
+                        return false;
+                    }
+                    TStrongObjectPtr<UObject> KeepDestination(Destination);
+                TArray<UPackage*> LoadedReferencers;
+                for (const FName& Referencer : Referencers)
+                {
+                    UPackage* Loaded = FindPackage(nullptr, *Referencer.ToString());
+                    if (!Loaded)
+                    {
+                        Loaded = LoadPackage(nullptr, *Referencer.ToString(), LOAD_None);
+                        if (Loaded) { LoadedReferencers.Add(Loaded); }
+                    }
+                }
+                // Rewire in-memory references, then persist them BEFORE touching the
+                // redirector: a loaded level/blueprint keeps resolving through the old path
+                // until its package is saved with the rewired references.
+                TArray<UObject*> Olds;
+                Olds.Add(Redirector);
+                ObjectTools::ForceReplaceReferences(Destination, Olds);
+                for (UPackage* Loaded : LoadedReferencers)
+                {
+                    if (!UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false))
+                    {
+                        Error = TEXT("Referencer package failed to save: ") + Loaded->GetName();
+                        return false;
+                    }
+                }
+                }
+            }
+            Redirector->RemoveFromRoot();
+            CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+            // Re-look-up after GC: the raw pointer is stale if the object was collected.
+            UObject* PackageObject = FindObject<UPackage>(nullptr, *PackageName);
+            UObjectRedirector* RemainingRedirector = PackageObject ? FindObject<UObjectRedirector>(PackageObject, *Name) : nullptr;
+            if (RemainingRedirector)
+            {
+                // A loaded world can still hold the redirector in an import map resolved
+                // before the rewire, so GC may miss it; the engine report path deletes it
+                // directly in that case rather than failing.
+                TArray<UObject*> ToForceDelete;
+                ToForceDelete.Add(RemainingRedirector);
+                if (PackageObject) { ToForceDelete.Add(PackageObject); }
+                ObjectTools::ForceDeleteObjects(ToForceDelete, /*bShowConfirmation=*/false);
+            }
+            else if (PackageObject)
+            {
+                // The redirector object is gone; drop the emptied package. DeleteLoadedAsset
+                // would create a NEW redirector, so bypass it with a force delete.
+                TArray<UObject*> EmptyPackage;
+                EmptyPackage.Add(PackageObject);
+                ObjectTools::ForceDeleteObjects(EmptyPackage, /*bShowConfirmation=*/false);
+            }
+        }
+        AR.WaitForPackage(PackageName);
+        TArray<FAssetData> Remaining;
+        AR.GetAssetsByPackageName(FName(*PackageName), Remaining);
+        if (bDelete && (Remaining.Num() > 0 || FPackageName::DoesPackageExist(PackageName)))
+        {
+            Error = TEXT("Source redirector remains; check read-only packages/source control, then run fixup_redirectors");
+            return false;
+        }
+        // A force-deleted source package can leave stale in-memory registry edges behind
+        // (the open map resolved the import before the rewire). Edges pointing at a
+        // package that no longer exists in memory or on disk cannot resolve, so they are
+        // harmless; only fail when the package itself is still real.
+        if (bDelete && !FPackageName::DoesPackageExist(PackageName) && !FindObject<UPackage>(nullptr, *PackageName))
+        {
+            return true;
+        }
+        TArray<FName> Referencers;
+        AR.GetReferencers(FName(*PackageName), Referencers);
+        if (Referencers.Num() > 0)
+        {
+            TArray<FString> Names;
+            for (const FName& Referencer : Referencers) { Names.Add(Referencer.ToString()); }
+            Error = TEXT("Registry still reports source referencers: ") + FString::Join(Names, TEXT(", "));
+            return false;
+        }
+        return true;
     }
+}
 
-    if (Pending->Num() == 0)
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveFolder(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Source, Destination;
+    bool bRecursive = true, bDryRun = false;
+    if (!Params->TryGetStringField(TEXT("source_path"), Source) || !Params->TryGetStringField(TEXT("destination_path"), Destination) ||
+        (Params->HasField(TEXT("recursive")) && !Params->TryGetBoolField(TEXT("recursive"), bRecursive)) ||
+        (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), bDryRun)))
+    { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("source_path/destination_path must be strings; recursive/dry_run must be booleans")); }
+    Source = Source.TrimStartAndEnd();
+    Destination = Destination.TrimStartAndEnd();
+    Source.RemoveFromEnd(TEXT("/"));
+    Destination.RemoveFromEnd(TEXT("/"));
+    if (!FPackageName::IsValidLongPackageName(Source) || !FPackageName::IsValidLongPackageName(Destination) ||
+        Source.Contains(TEXT(".")) || Destination.Contains(TEXT(".")) ||
+        Source.Equals(Destination, ESearchCase::IgnoreCase) || Destination.StartsWith(Source + TEXT("/"), ESearchCase::IgnoreCase) ||
+        Source.StartsWith(Destination + TEXT("/"), ESearchCase::IgnoreCase))
+    { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Use valid, distinct, non-nested content folders")); }
+    FARFilter Filter;
+    Filter.PackagePaths.Add(FName(*Source));
+    Filter.bRecursivePaths = bRecursive;
+    TArray<FAssetData> Assets;
+    FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssets(Filter, Assets);
+    Assets.Sort([](const FAssetData& A, const FAssetData& B) { return A.PackageName.ToString() < B.PackageName.ToString(); });
+    TArray<TSharedPtr<FJsonValue>> Moves;
+    for (const auto& Asset : Assets)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No moves provided: pass 'moves' [{source, destination}] or 'assets' with 'destination_path'"));
+        if (Asset.AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName()) { continue; }
+        const FString Package = Asset.PackageName.ToString();
+        if (!Package.StartsWith(Source + TEXT("/"), ESearchCase::IgnoreCase))
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Registry returned an asset outside the source folder")); }
+        auto Move = MakeShared<FJsonObject>();
+        Move->SetStringField(TEXT("source"), Package);
+        Move->SetStringField(TEXT("destination"), Destination + Package.Mid(Source.Len()));
+        Moves.Add(MakeShared<FJsonValueObject>(Move));
     }
+    auto MoveParams = MakeShared<FJsonObject>();
+    MoveParams->SetArrayField(TEXT("moves"), Moves);
+    MoveParams->SetBoolField(TEXT("dry_run"), bDryRun);
+    MoveParams->SetBoolField(TEXT("fixup_redirectors"), true);
+    return HandleMoveAssets(MoveParams);
+}
 
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TSharedPtr<FJsonObject>& Params)
+{
+    if (AssetMutationBusy()) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another asset mutation job is running; poll it before restructuring")); }
+    bool bDryRun = false, bFixup = true;
+    if ((Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), bDryRun)) ||
+        (Params->HasField(TEXT("fixup_redirectors")) && !Params->TryGetBoolField(TEXT("fixup_redirectors"), bFixup)))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("dry_run and fixup_redirectors must be booleans"));
+    }
+    TArray<TPair<FString, FString>> Inputs;
+    const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+    if (Params->HasField(TEXT("moves")))
+    {
+        if (Params->HasField(TEXT("assets")) || Params->HasField(TEXT("destination_path")) || !Params->TryGetArrayField(TEXT("moves"), Array))
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide only moves, or assets with destination_path")); }
+        for (const auto& Value : *Array)
+        {
+            const TSharedPtr<FJsonObject>* Object = nullptr;
+            FString Source, Destination;
+            if (!Value.IsValid() || !Value->TryGetObject(Object) || !Object ||
+                !(*Object)->TryGetStringField(TEXT("source"), Source) || !(*Object)->TryGetStringField(TEXT("destination"), Destination))
+            { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Every move requires string source and destination")); }
+            Inputs.Emplace(Source, Destination);
+        }
+    }
+    else
+    {
+        FString DestinationPath;
+        if (!Params->TryGetArrayField(TEXT("assets"), Array) || !Params->TryGetStringField(TEXT("destination_path"), DestinationPath) ||
+            !FPackageName::IsValidLongPackageName(DestinationPath) || DestinationPath.Contains(TEXT(".")))
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide assets and a valid destination_path")); }
+        for (const auto& Value : *Array)
+        {
+            FString Source, Package;
+            if (!Value.IsValid() || !Value->TryGetString(Source) || !NormalizeAssetPackage(Source, Package))
+            { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Every asset must be a valid package/object path")); }
+            Inputs.Emplace(Source, DestinationPath / FPackageName::GetLongPackageAssetName(Package));
+        }
+    }
+    if (Inputs.Num() == 0) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No assets to move")); }
+    auto Pending = MakeShared<TArray<FAssetMoveRequest>>();
+    TSet<FName> Sources, Destinations;
+    TArray<TSharedPtr<FJsonValue>> Preview;
+    for (const auto& Input : Inputs)
+    {
+        FString Source, Destination;
+        if (!NormalizeAssetPackage(Input.Key, Source) || !NormalizeAssetPackage(Input.Value, Destination))
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid source or destination package/object path")); }
+        const FName SourceKey(*Source), DestinationKey(*Destination);
+        if (SourceKey == DestinationKey || Sources.Contains(SourceKey) || Destinations.Contains(DestinationKey) || PackageOccupied(Destination))
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Duplicate, self move, or occupied destination: %s -> %s"), *Source, *Destination)); }
+        TArray<FAssetData> SourceAssets;
+        FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssetsByPackageName(SourceKey, SourceAssets);
+        if (SourceAssets.Num() != 1 || SourceAssets[0].AssetName.ToString() != FPackageName::GetLongPackageAssetName(Source) ||
+            SourceAssets[0].AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName())
+        { return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Source must be one registered non-redirector asset: %s"), *Source)); }
+        Sources.Add(SourceKey);
+        Destinations.Add(DestinationKey);
+        FAssetMoveRequest Request;
+        Request.Source = Source;
+        Request.NewPackagePath = FPackageName::GetLongPackagePath(Destination);
+        Request.NewName = FPackageName::GetLongPackageAssetName(Destination);
+        Pending->Add(Request);
+        auto Item = MakeShared<FJsonObject>();
+        Item->SetStringField(TEXT("source"), Source);
+        Item->SetStringField(TEXT("destination"), Destination);
+        Preview.Add(MakeShared<FJsonValueObject>(Item));
+    }
+    auto Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("dry_run"), bDryRun);
+    Result->SetBoolField(TEXT("fixup_redirectors"), bFixup);
+    Result->SetNumberField(TEXT("count"), Pending->Num());
+    Result->SetArrayField(TEXT("moves"), Preview);
+    if (bDryRun) { return Result; }
     const FString JobId = CreateMcpJob(TEXT("move_assets"), Pending->Num());
-
-    RunJobChunked(JobId, [Pending](const TSharedPtr<FMcpJobState>& Job) -> bool
+    auto VerificationStarted = MakeShared<double>(0.0);
+    RunJobChunked(JobId, [Pending, bFixup, VerificationStarted](const TSharedPtr<FMcpJobState>& Job) -> bool
     {
         if (Job->Done >= Pending->Num()) { return false; }
-        const FAssetMoveRequest& Req = (*Pending)[Job->Done];
-
-        UObject* Asset = UEditorAssetLibrary::LoadAsset(Req.Source);
-        if (!Asset)
+        const auto& Request = (*Pending)[Job->Done];
+        const FString Destination = Request.NewPackagePath / Request.NewName;
+        auto Fail = [&](const FString& Reason) -> bool
         {
-            Job->Items.Add(FString::Printf(TEXT("%s -> %s/%s: FAILED (asset not found)"), *Req.Source, *Req.NewPackagePath, *Req.NewName));
-        }
-        else
+            Job->State = TEXT("failed");
+            Job->Error = FString::Printf(TEXT("%s -> %s: %s. Earlier moves are not rolled back; inspect both paths before retrying."), *Request.Source, *Destination, *Reason);
+            Job->Items.Add(Job->Error);
+            return false;
+        };
+        if (*VerificationStarted > 0.0)
         {
-            FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-            TArray<FAssetRenameData> RenameData;
-            RenameData.Emplace(Asset, Req.NewPackagePath, Req.NewName);
-            const bool bOk = AssetToolsModule.Get().RenameAssets(RenameData);
-            Job->Items.Add(FString::Printf(TEXT("%s -> %s/%s: %s"), *Req.Source, *Req.NewPackagePath, *Req.NewName, bOk ? TEXT("ok") : TEXT("FAILED")));
+            Job->Phase = TEXT("verify: ") + Request.Source;
+            FString Error;
+            if (!FixAndVerifyRedirector(Request.Source, true, Error, false))
+            {
+                if (FPlatformTime::Seconds() - *VerificationStarted < 30.0) { return true; }
+                return Fail(TEXT("Verification timed out: ") + Error);
+            }
+            *VerificationStarted = 0.0;
+            Job->Items.Add(Request.Source + TEXT(" -> ") + Destination + TEXT(": saved, redirector cleanup verified"));
+            Job->Done++;
+            return Job->Done < Pending->Num();
         }
-
+        if (PackageOccupied(Destination)) { return Fail(TEXT("Destination became occupied")); }
+        TStrongObjectPtr<UObject> Asset(UEditorAssetLibrary::LoadAsset(Request.Source));
+        if (!Asset.IsValid() || Asset->GetOutermost()->GetName() != Request.Source) { return Fail(TEXT("Source is missing or changed")); }
+        Job->Phase = TEXT("rename: ") + Request.Source;
+        TArray<FAssetRenameData> RenameData;
+        RenameData.Emplace(Asset.Get(), Request.NewPackagePath, Request.NewName);
+        if (!FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get().RenameAssets(RenameData))
+        { return Fail(TEXT("Rename failed (it may have partially changed the asset)")); }
+        Job->Phase = TEXT("save: ") + Destination;
+        if (Asset->GetOutermost()->GetName() != Destination || !UEditorAssetLibrary::SaveLoadedAsset(Asset.Get(), false))
+        { return Fail(TEXT("Destination save failed after rename")); }
+        if (bFixup)
+        {
+            Job->Phase = TEXT("fixup: ") + Request.Source;
+            FString Error;
+            FixAndVerifyRedirector(Request.Source, true, Error);
+            // Saved referencer dependency updates are consumed on later registry ticks.
+            *VerificationStarted = FPlatformTime::Seconds();
+            return true;
+        }
+        Job->Items.Add(FString::Printf(TEXT("%s -> %s: %s"), *Request.Source, *Destination, bFixup ? TEXT("saved, redirector cleanup verified") : TEXT("saved, redirector cleanup disabled")));
         Job->Done++;
         Job->Phase = FString::Printf(TEXT("%d/%d assets"), Job->Done, Job->Total);
         return Job->Done < Pending->Num();
     });
-
-    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-    ResultObj->SetStringField(TEXT("job_id"), JobId);
-    ResultObj->SetStringField(TEXT("state"), TEXT("queued"));
-    ResultObj->SetNumberField(TEXT("count"), Pending->Num());
-    return ResultObj;
+    Result->SetStringField(TEXT("job_id"), JobId);
+    Result->SetStringField(TEXT("state"), TEXT("queued"));
+    return Result;
 }
 
 // resave_packages: load + save packages (by explicit list, or everything under a path).
@@ -1943,6 +2180,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
 // redirectors. Runs as an async job; poll get_job_status.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleResavePackages(const TSharedPtr<FJsonObject>& Params)
 {
+    if (AssetMutationBusy()) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another asset mutation job is running")); }
     // Resave works at the ASSET level: UEditorAssetLibrary::SaveAsset loads the asset
     // (which resolves redirector imports through the new path) and saves its package.
     // This is the scriptable substitute for "load + resave every referencing package"

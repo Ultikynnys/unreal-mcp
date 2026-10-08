@@ -93,6 +93,7 @@ private:
     TSharedPtr<FJsonObject> HandleListRedirectors(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFixupRedirectors(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleMoveAssets(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleMoveFolder(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleResavePackages(const TSharedPtr<FJsonObject>& Params);
 
     // Applies up to Budget ops of the job and returns true while work remains
