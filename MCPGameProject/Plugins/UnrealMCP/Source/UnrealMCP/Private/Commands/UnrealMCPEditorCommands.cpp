@@ -45,6 +45,7 @@
 #include "Misc/Guid.h"
 #include "UObject/ObjectRedirector.h"
 #include "ObjectTools.h"
+#include "MCPProtocolVersion.h"
 #include "Misc/PackageName.h"
 #include "UObject/StrongObjectPtr.h"
 #include "AssetToolsModule.h"
@@ -550,7 +551,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRecoverEditor(const TSha
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
 {
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-    ResultObj->SetStringField(TEXT("protocol_version"), TEXT("1.0"));
+    ResultObj->SetStringField(TEXT("protocol_version"), MCP_PROTOCOL_VERSION);
     ResultObj->SetStringField(TEXT("plugin"), TEXT("UnrealMCP"));
     ResultObj->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
 

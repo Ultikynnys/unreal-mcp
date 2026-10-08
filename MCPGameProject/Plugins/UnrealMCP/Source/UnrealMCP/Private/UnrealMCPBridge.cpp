@@ -61,6 +61,7 @@
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "MCPStateSnapshot.h"
+#include "MCPProtocolVersion.h"
 #include "CoreGlobals.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -405,6 +406,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     auto DispatchOnGameThread = [this, CommandType, Params, Promise]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
+        // Stamp the contract version on EVERY reply (success, error, and the modal/busy
+        // refusals) so a stale plugin is detectable on any call, not just a get_capabilities
+        // probe. The server reads MCP_PROTOCOL_VERSION from the same header and fails closed
+        // when this does not match.
+        ResponseJson->SetStringField(TEXT("protocol"), MCP_PROTOCOL_VERSION);
         
         // For the duration of this call, treat the engine as an unattended script so any
         // FMessageDialog/prompt auto-answers its default instead of opening a modal that

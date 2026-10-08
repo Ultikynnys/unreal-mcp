@@ -36,6 +36,35 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 `ok` / `wedged` / `down` distinguishes "dead" from "busy": a busy editor still answers
 `ping`, a crashed one has no process and no listener.
 
+## Version mismatch: rebuild, do not guess
+
+The plugin and the Python server share one contract version, `MCP_PROTOCOL_VERSION` in
+`MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Public/MCPProtocolVersion.h`. The bridge
+stamps it onto every reply and the server reads the same header and refuses any call whose
+reply does not match, including a reply with no version at all (a plugin built before the
+handshake existed). The failure looks like this and names the fix:
+
+```text
+Unreal plugin version mismatch: the running Unreal plugin reported no protocol version at
+all, so it was built before the handshake; this server speaks protocol 2. ... rebuild it and
+restart the editor before calling again.
+```
+
+That means the editor is running a stale `UnrealEditor-UnrealMCP.dll`. Do not retry and do
+not launch another editor: reap, rebuild, restart.
+
+```bash
+uv run --project Python python Python/scripts/editor_process.py reap
+"C:\Program Files\Epic Games\UE_5.6\Engine\Build\BatchFiles\Build.bat" MCPGameProjectEditor Win64 Development MCPGameProject/MCPGameProject.uproject -WaitMutex -NoHotReloadFromIDE
+uv run --project Python python Python/scripts/editor_process.py restart --wait 180
+```
+
+The reap is not optional: a running editor holds `UnrealEditor-UnrealMCP.dll`, so the link
+step fails with `LNK1104: cannot open file ... being used by another process`.
+
+Bump the macro whenever the reply envelope or a command's parameters change, so a stale
+editor fails loudly instead of answering with an out-of-date contract.
+
 ## The out-of-band state file
 
 The bridge writes `MCPGameProject/Saved/MCP/bridge_state.json` from a thread that is **not**

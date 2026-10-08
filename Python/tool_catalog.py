@@ -155,5 +155,9 @@ def render_instructions(catalog: list[ToolInfo]) -> str:
         f"Python/scripts/editor_process.py status`, then `reap` and `restart`. "
         f"MCPGameProject/Saved/MCP/bridge_state.json carries an out-of-band snapshot (state, "
         f"current command, game_thread_stalled_seconds, modal_title) that answers even when "
-        f"the game thread is blocked."
+        f"the game thread is blocked.\n"
+        f"\n"
+        f"If a call fails with 'Unreal plugin version mismatch', the running Unreal plugin is "
+        f"older than this server: rebuild the plugin and restart the editor (the failure names "
+        f"the exact command). Every call fails until it matches, so do not retry."
     )

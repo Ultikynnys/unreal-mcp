@@ -7,6 +7,7 @@ A simple MCP server for interacting with Unreal Engine.
 import logging
 import os
 import pathlib
+import re
 import socket
 import sys
 import json
@@ -74,6 +75,55 @@ UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
 # that is still running (map loads, batch renames). Keep this generous and separate
 # from the connect timeout above.
 UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
+
+# --- Protocol version -------------------------------------------------------
+# The C++ bridge stamps MCP_PROTOCOL_VERSION onto every reply. This header is the single
+# source of truth for that value, read from disk here so the plugin and the server cannot
+# be edited apart. A mismatch means the running editor was not rebuilt after the contract
+# changed, and no call can be trusted.
+PLUGIN_VERSION_HEADER = (
+    pathlib.Path(_SERVER_DIR).parent / "MCPGameProject" / "Plugins" / "UnrealMCP"
+    / "Source" / "UnrealMCP" / "Public" / "MCPProtocolVersion.h"
+)
+
+
+def read_expected_protocol(header_path: pathlib.Path) -> str:
+    """The contract version this server requires, read from the plugin header."""
+    try:
+        text = header_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r'#define\s+MCP_PROTOCOL_VERSION\s+TEXT\("([^"]+)"\)', text)
+    return match.group(1) if match else ""
+
+
+def protocol_mismatch_error(expected: str, reported: str) -> str:
+    """'' when the versions agree, otherwise the actionable refusal message.
+
+    Fails closed in both directions: a different version, and no version at all (a plugin
+    built before the handshake existed). An unreadable header cannot be verified against,
+    so the check is skipped and the reason is logged at startup.
+    """
+    if not expected:
+        return ""
+    if reported == expected:
+        return ""
+    if reported:
+        detail = f"this server speaks protocol {expected}, the editor reports {reported}"
+    else:
+        detail = (f"the running Unreal plugin reported no protocol version at all, so it was "
+                  f"built before the handshake; this server speaks protocol {expected}")
+    return (
+        f"Unreal plugin version mismatch: {detail}. The running plugin is stale: rebuild it "
+        f"and restart the editor before calling again. Rebuild with "
+        f'"<UE>\\Engine\\Build\\BatchFiles\\Build.bat" MCPGameProjectEditor Win64 Development '
+        f'"MCPGameProject/MCPGameProject.uproject" -WaitMutex, then run '
+        f"`uv run --project Python python Python/scripts/editor_process.py restart`. "
+        f"Every call fails until the plugin matches; retrying the same call will not help."
+    )
+
+
+EXPECTED_PROTOCOL = read_expected_protocol(PLUGIN_VERSION_HEADER)
 
 
 def _failure_detail(response: Dict[str, Any]) -> str:
@@ -248,13 +298,21 @@ class UnrealConnection:
             
             # Log complete response for debugging
             logger.debug(f"Complete response from Unreal: {response}")
-            
+
+            # Fail closed on a contract mismatch BEFORE trusting anything in the reply: a
+            # stale plugin speaks an out-of-date envelope, so a successful-looking result
+            # may not mean what this server thinks it means.
+            reported_version = response.get("protocol") if isinstance(response, dict) else None
+            mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, str(reported_version or ""))
+            if mismatch:
+                logger.error("Refusing command '%s': %s", command, mismatch)
+                response = {"success": False, "result": None, "message": mismatch}
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
             # Original fields are preserved rather than replaced, so a failure can still be
             # inspected (execute_python's "output" trace, batch "results", ...) instead of
             # collapsing to a bare error with the detail discarded.
-            if isinstance(response, dict):
+            elif isinstance(response, dict):
                 envelope = dict(response)
                 if response.get("status") == "error" or response.get("success") is False:
                     error_message = (
@@ -336,6 +394,12 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
+    if EXPECTED_PROTOCOL:
+        logger.info("Expecting editor protocol %s (MCPProtocolVersion.h)", EXPECTED_PROTOCOL)
+    else:
+        logger.warning(
+            "Could not read %s; the plugin/server version check is DISABLED",
+            PLUGIN_VERSION_HEADER)
     try:
         _unreal_connection = get_unreal_connection()
         if _unreal_connection:
