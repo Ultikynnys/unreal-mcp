@@ -38,11 +38,24 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 
 ## Version mismatch: rebuild, do not guess
 
-The plugin and the Python server share one contract version, `MCP_PROTOCOL_VERSION` in
-`MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Public/MCPProtocolVersion.h`. The bridge
-stamps it onto every reply and the server reads the same header and refuses any call whose
-reply does not match, including a reply with no version at all (a plugin built before the
-handshake existed). The failure looks like this and names the fix:
+One contract version, declared on both sides and reported by the running build:
+
+| Side | Where |
+|---|---|
+| Python server | `SERVER_PROTOCOL` in `Python/unreal_mcp_server.py` |
+| Plugin source | `MCP_PROTOCOL_VERSION` in `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Public/MCPProtocolVersion.h` |
+| Loaded plugin | stamped as `protocol` on every reply |
+
+All three must be identical. The server pings first and refuses to send the command when they
+differ, so nothing is executed; a reply with no version at all (a plugin built before the
+handshake existed) is refused the same way. Two failures are reported distinctly:
+
+- a stale plugin (its build disagrees with the source), which names the rebuild;
+- drift inside the checkout (the Python server and the plugin source disagree), which means
+  the repository and the plugin are from different revisions.
+
+Bump `SERVER_PROTOCOL` and `MCP_PROTOCOL_VERSION` together:
+`Python/scripts/test_protocol_version.py` fails when they differ. The failure looks like this:
 
 ```text
 Unreal plugin version mismatch: the running Unreal plugin reported no protocol version at

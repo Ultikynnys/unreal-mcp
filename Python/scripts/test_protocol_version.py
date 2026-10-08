@@ -42,19 +42,27 @@ class HeaderTests(unittest.TestCase):
         self.assertRegex(text, r'#define\s+MCP_PROTOCOL_VERSION\s+TEXT\("[^"]+"\)')
 
     def test_server_reads_the_version_from_the_header(self):
-        """One source of truth: the Python side must not carry its own literal."""
-        expected = server.read_expected_protocol(HEADER)
-        self.assertTrue(expected, "server could not read MCP_PROTOCOL_VERSION from the header")
-        self.assertEqual(server.EXPECTED_PROTOCOL, expected)
+        header_version = server.read_expected_protocol(HEADER)
+        self.assertTrue(header_version, "could not read MCP_PROTOCOL_VERSION from the header")
+        self.assertEqual(server.HEADER_PROTOCOL, header_version)
 
-    def test_missing_header_disables_rather_than_invents_a_version(self):
+    def test_missing_header_reads_as_empty(self):
         self.assertEqual(server.read_expected_protocol(HEADER.parent / "nope.h"), "")
 
-    def test_version_has_not_drifted_between_header_and_server(self):
-        """The check the user asked for: the two sides must always agree."""
-        server_text = (REPO_ROOT / "Python" / "unreal_mcp_server.py").read_text(encoding="utf-8")
-        literals = re.findall(r'MCP_PROTOCOL_VERSION\s*=\s*"([^"]+)"', server_text)
-        self.assertEqual(literals, [], "server hardcodes a version; it must read the header")
+    def test_python_and_plugin_sides_declare_the_same_version(self):
+        """The user's rule: both sides must always carry the same version.
+
+        The Python server declares SERVER_PROTOCOL; the plugin source declares
+        MCP_PROTOCOL_VERSION. Bumping one and not the other must fail here.
+        """
+        self.assertTrue(server.SERVER_PROTOCOL, "the server declares no version of its own")
+        header_version = server.read_expected_protocol(HEADER)
+        self.assertEqual(server.SERVER_PROTOCOL, header_version)
+
+    def test_the_cpp_macro_matches_the_python_declaration(self):
+        text = HEADER.read_text(encoding="utf-8")
+        macro = re.search(r'#define\s+MCP_PROTOCOL_VERSION\s+TEXT\("([^"]+)"\)', text).group(1)
+        self.assertEqual(macro, server.SERVER_PROTOCOL)
 
 
 class BridgeStampTests(unittest.TestCase):
@@ -108,8 +116,8 @@ class PreflightOrderTests(unittest.TestCase):
 
     def test_matching_version_dispatches_after_the_probe(self):
         conn, sent = self._connection({
-            "ping": {"protocol": server.EXPECTED_PROTOCOL},
-            "get_capabilities": {"protocol": server.EXPECTED_PROTOCOL,
+            "ping": {"protocol": server.SERVER_PROTOCOL},
+            "get_capabilities": {"protocol": server.SERVER_PROTOCOL,
                                  "status": "success", "result": {"ok": True}},
         })
         result = conn.send_command("get_capabilities")
@@ -117,7 +125,7 @@ class PreflightOrderTests(unittest.TestCase):
         self.assertEqual(sent, ["ping", "get_capabilities"])
 
     def test_ping_is_not_probed_again(self):
-        conn, sent = self._connection({"ping": {"protocol": server.EXPECTED_PROTOCOL}})
+        conn, sent = self._connection({"ping": {"protocol": server.SERVER_PROTOCOL}})
         conn.send_command("ping")
         self.assertEqual(sent, ["ping"])
 
@@ -127,6 +135,34 @@ class PreflightOrderTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("unreachable", result["message"])
         self.assertNotIn("version mismatch", result["message"])
+
+
+class AgreementTests(unittest.TestCase):
+    """All three sides must agree: Python server, plugin source, loaded plugin."""
+
+    def test_all_three_agree_is_allowed(self):
+        self.assertEqual(server.protocol_agreement_error("2", "2", "2"), "")
+
+    def test_checkout_drift_python_vs_plugin_source_is_refused(self):
+        """The direction the header-only check missed: a stale Python, header unchanged."""
+        message = server.protocol_agreement_error("2", "3", "3")
+        self.assertIn("drift", message)
+        self.assertIn("speaks protocol 2", message)
+        self.assertIn("declares 3", message)
+        self.assertIn("reports 3", message)
+
+    def test_stale_plugin_is_refused(self):
+        message = server.protocol_agreement_error("2", "2", "1.0")
+        self.assertIn("version mismatch", message)
+        self.assertIn("1.0", message)
+
+    def test_plugin_predating_the_handshake_is_refused(self):
+        self.assertIn("no protocol version", server.protocol_agreement_error("2", "2", ""))
+
+    def test_unreadable_header_does_not_disable_the_plugin_check(self):
+        """A missing header must not silently switch the guard off."""
+        self.assertIn("version mismatch", server.protocol_agreement_error("2", "", "1.0"))
+        self.assertEqual(server.protocol_agreement_error("2", "", "2"), "")
 
 
 class MismatchCheckTests(unittest.TestCase):
@@ -153,7 +189,8 @@ class MismatchCheckTests(unittest.TestCase):
     def test_real_files_agree(self):
         """Guard the guard: the two sides of the repo must satisfy the check today."""
         self.assertEqual(
-            server.protocol_mismatch_error(server.EXPECTED_PROTOCOL, server.EXPECTED_PROTOCOL), "")
+            server.protocol_agreement_error(
+                server.SERVER_PROTOCOL, server.HEADER_PROTOCOL, server.SERVER_PROTOCOL), "")
 
 
 if __name__ == "__main__":

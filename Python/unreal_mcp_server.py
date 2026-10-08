@@ -123,7 +123,34 @@ def protocol_mismatch_error(expected: str, reported: str) -> str:
     )
 
 
-EXPECTED_PROTOCOL = read_expected_protocol(PLUGIN_VERSION_HEADER)
+def protocol_agreement_error(server_version: str, header_version: str, reported_version: str) -> str:
+    """'' only when the Python server, the plugin source and the loaded plugin all agree.
+
+    Three sides, one contract: this server declares SERVER_PROTOCOL, the plugin source
+    declares MCP_PROTOCOL_VERSION in the header, and the running plugin reports what it was
+    compiled with. Comparing the header to the plugin alone would only catch a stale plugin;
+    a Python server from a different revision than the plugin source would pass, because it
+    has nothing of its own to disagree with. Both directions are refused here.
+    """
+    if header_version and header_version != server_version:
+        return (
+            f"Unreal MCP protocol drift in this checkout: the Python server speaks protocol "
+            f"{server_version}, the plugin source (MCPProtocolVersion.h) declares "
+            f"{header_version}, and the loaded plugin reports "
+            f"{reported_version or 'no version'}. The repository and the plugin source are from "
+            f"different revisions: update the checkout, then rebuild the plugin and restart the "
+            f"editor (Build.bat MCPGameProjectEditor Win64 Development <uproject>, then "
+            f"`uv run --project Python python Python/scripts/editor_process.py restart`) so all "
+            f"three agree. Every call fails until they do.")
+    return protocol_mismatch_error(server_version, reported_version)
+
+
+# The version THIS Python server speaks. It must equal MCP_PROTOCOL_VERSION in the plugin
+# header; the two are one contract declared on both sides, so drift in EITHER direction is
+# caught at runtime rather than only by a test.
+SERVER_PROTOCOL = "2"
+
+HEADER_PROTOCOL = read_expected_protocol(PLUGIN_VERSION_HEADER)
 
 
 def _failure_detail(response: Dict[str, Any]) -> str:
@@ -323,7 +350,8 @@ class UnrealConnection:
             # create or delete assets while we merely refused to report the result. Probe
             # with a ping (which changes nothing) and refuse before dispatching anything.
             if command != "ping":
-                mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, self._probe_protocol())
+                mismatch = protocol_agreement_error(
+                    SERVER_PROTOCOL, HEADER_PROTOCOL, self._probe_protocol())
                 if mismatch:
                     logger.error("Refusing '%s' before dispatch: %s", command, mismatch)
                     return {"success": False, "result": None, "message": mismatch,
@@ -334,7 +362,7 @@ class UnrealConnection:
             # Belt and braces: a reply that disagrees with the handshake is refused too, in
             # case the editor was swapped for a different build between the two round trips.
             reported = response.get("protocol") if isinstance(response, dict) else None
-            mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, str(reported or ""))
+            mismatch = protocol_agreement_error(SERVER_PROTOCOL, HEADER_PROTOCOL, str(reported or ""))
             if mismatch:
                 logger.error("Refusing command '%s': %s", command, mismatch)
                 return {"success": False, "result": None, "message": mismatch,
@@ -408,12 +436,17 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
-    if EXPECTED_PROTOCOL:
-        logger.info("Expecting editor protocol %s (MCPProtocolVersion.h)", EXPECTED_PROTOCOL)
-    else:
-        logger.warning(
-            "Could not read %s; the plugin/server version check is DISABLED",
-            PLUGIN_VERSION_HEADER)
+    logger.info("This server speaks protocol %s; MCPProtocolVersion.h declares %s",
+                SERVER_PROTOCOL, HEADER_PROTOCOL or "UNREADABLE")
+    if not HEADER_PROTOCOL:
+        # The plugin-side check still runs (against SERVER_PROTOCOL); only checkout drift
+        # detection needs the header.
+        logger.warning("Could not read %s: checkout/plugin-source drift cannot be detected, "
+                       "but the loaded plugin is still checked against %s",
+                       PLUGIN_VERSION_HEADER, SERVER_PROTOCOL)
+    elif HEADER_PROTOCOL != SERVER_PROTOCOL:
+        logger.error("Protocol drift in this checkout: server %s vs header %s",
+                     SERVER_PROTOCOL, HEADER_PROTOCOL)
     try:
         _unreal_connection = get_unreal_connection()
         if _unreal_connection:

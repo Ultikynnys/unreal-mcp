@@ -157,7 +157,9 @@ def render_instructions(catalog: list[ToolInfo]) -> str:
         f"current command, game_thread_stalled_seconds, modal_title) that answers even when "
         f"the game thread is blocked.\n"
         f"\n"
-        f"If a call fails with 'Unreal plugin version mismatch', the running Unreal plugin is "
-        f"older than this server: rebuild the plugin and restart the editor (the failure names "
-        f"the exact command). Every call fails until it matches, so do not retry."
+        f"If a call fails with 'Unreal plugin version mismatch' or 'protocol drift', the "
+        f"plugin and this server disagree (a stale plugin build, or a checkout from a "
+        f"different revision). The failure names the fix: rebuild the plugin and/or update "
+        f"the checkout as it says, then restart the editor. Every call fails until the three "
+        f"agree, so do not retry."
     )
