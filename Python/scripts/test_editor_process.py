@@ -202,5 +202,33 @@ class SecretTests(unittest.TestCase):
             self.assertEqual(editor_process.control_plane_secret(server), "")
 
 
+class OrphanWatchdogTests(unittest.TestCase):
+    """The stdio server must not exit on its own; only a proven-dead launcher ends it."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        root = pathlib.Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("server_watchdog", root / "Python" / "unreal_mcp_server.py")
+        cls.server = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.server)
+        cls.source = (root / "Python" / "unreal_mcp_server.py").read_text(encoding="utf-8")
+
+    def test_a_live_process_reads_as_alive(self):
+        self.assertTrue(self.server._process_alive(os.getppid()))
+
+    def test_our_own_pid_reads_as_alive(self):
+        self.assertTrue(self.server._process_alive(os.getpid()))
+
+    def test_a_pid_that_cannot_exist_reads_as_dead(self):
+        self.assertFalse(self.server._process_alive(999999999))
+
+    def test_reparenting_does_not_end_the_server(self):
+        """A wrapper launcher exiting reparents us; that must not be read as death."""
+        self.assertNotIn("os.getppid() != parent_pid", self.source)
+
+    def test_access_denied_is_not_death(self):
+        self.assertIn("!= 87", self.source)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

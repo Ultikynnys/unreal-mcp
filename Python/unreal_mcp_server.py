@@ -533,7 +533,12 @@ def info():
 
 
 def _process_alive(pid: int) -> bool:
-    """Best-effort liveness check for another process (Windows + POSIX)."""
+    """Liveness of another process (Windows + POSIX): True unless it is PROVEN dead.
+
+    An inconclusive check is not proof of death. OpenProcess also fails for a parent at a
+    different integrity level, and reading that as death made the server exit by itself,
+    which is the intermittent "the MCP server just dies" this must not reproduce.
+    """
     if not pid or pid <= 0:
         return False
     if os.name == "nt":
@@ -543,19 +548,23 @@ def _process_alive(pid: int) -> bool:
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if not handle:
-            return False
+            # 87 is ERROR_INVALID_PARAMETER: for a pid that means no such process, so it is dead.
+            # Anything else (access denied) only means we cannot inspect it, so assume it lives.
+            return kernel32.GetLastError() != 87
         try:
             code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return False
+                return True  # inconclusive again, and inconclusive is not dead
             return code.value == STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:
+        return True  # it exists, it is just not ours to signal
 
 
 def _start_orphan_watchdog(poll_seconds: float = 4.0) -> None:
@@ -570,7 +579,10 @@ def _start_orphan_watchdog(poll_seconds: float = 4.0) -> None:
     def _watch() -> None:
         while True:
             time.sleep(poll_seconds)
-            if not _process_alive(parent_pid) or os.getppid() != parent_pid:
+            # Only a parent we can PROVE is gone ends this server. Reparenting is normal: a
+            # launcher that spawns us through a wrapper and exits leaves us parented to something
+            # else, and treating that as death is what killed healthy servers.
+            if not _process_alive(parent_pid):
                 logger.warning("Launcher (pid %s) is gone; exiting orphaned MCP server", parent_pid)
                 logging.shutdown()
                 os._exit(0)
