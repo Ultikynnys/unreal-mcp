@@ -176,7 +176,9 @@ Returns `dependencies` (packages this asset imports) and `referencers`
 ```
 
 Each path is deleted, then the redirector the delete leaves behind is verified
-gone with the same cleanup machinery as a move. Returns `deleted`, `failed`,
-`deleted_paths`, and `failures` (each naming the path and the reason). A
-`success:false` reply carries the failure summary in `error`. `force:true` keeps
-`success:true` when some paths fail; always inspect `failures`.
+gone with the same cleanup machinery as a move. An asset that is still
+referenced is refused unless `force:true`, and the referencing packages are named
+in the reply, because deleting a referenced asset silently nulls the reference
+in its consumers. Returns `deleted`, `failed`, `deleted_paths`, and `failures`
+(each naming the path and the reason); a `success:false` reply carries the
+failure summary in `error`.

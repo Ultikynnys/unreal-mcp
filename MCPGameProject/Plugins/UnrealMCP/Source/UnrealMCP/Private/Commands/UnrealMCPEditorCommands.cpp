@@ -3340,11 +3340,16 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteAssets(const TShar
 
     TArray<FString> Deleted;
     TArray<FString> Failed;
+    IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
     for (const FString& ObjectPath : ObjectPaths)
     {
-        FString PackageName;
-        FString AssetName;
-        if (!SplitObjectPath(ObjectPath, PackageName, AssetName))
+        // SplitObjectPath is built for moves (it yields the destination FOLDER); a delete
+        // needs the asset's own package: strip the ".Object" suffix and keep the rest.
+        FString PackageName = ObjectPath;
+        int32 DotIdx = INDEX_NONE;
+        if (PackageName.FindLastChar(TEXT('.'), DotIdx)) { PackageName = PackageName.Left(DotIdx); }
+        while (PackageName.EndsWith(TEXT("/"))) { PackageName.RemoveFromEnd(TEXT("/")); }
+        if (PackageName.IsEmpty())
         {
             Failed.Add(ObjectPath + TEXT(": invalid path"));
             continue;
@@ -3352,6 +3357,20 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteAssets(const TShar
         if (!UEditorAssetLibrary::DoesAssetExist(ObjectPath) && !FPackageName::DoesPackageExist(PackageName))
         {
             Failed.Add(ObjectPath + TEXT(": asset does not exist"));
+            continue;
+        }
+        // Deleting a referenced asset silently nulls the reference in its consumers
+        // (verified: a mesh's material slot becomes None). Refuse unless the caller
+        // opts in with force, and always name what would break.
+        AR.WaitForPackage(PackageName);
+        TArray<FAssetIdentifier> Referencers;
+        AR.GetReferencers(FName(*PackageName), Referencers);
+        if (Referencers.Num() > 0 && !bForce)
+        {
+            TArray<FString> Names;
+            for (const FAssetIdentifier& Referencer : Referencers) { Names.Add(Referencer.PackageName.ToString()); }
+            Failed.Add(FString::Printf(TEXT("%s: still referenced by %d package(s) [%s]; pass force=true to delete anyway"),
+                *ObjectPath, Names.Num(), *FString::Join(Names, TEXT(", "))));
             continue;
         }
         // DeleteLoadedAsset leaves a redirector behind by design; delete the asset then

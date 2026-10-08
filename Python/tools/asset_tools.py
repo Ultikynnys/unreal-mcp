@@ -246,9 +246,9 @@ def register_asset_tools(mcp: FastMCP):
         """Delete assets and clear the redirector they leave behind.
 
         Each path is deleted, then the leftover source-package redirector is verified
-        gone using the same machinery as move_assets cleanup: a deleted-but-stale
-        redirector is reported in 'failures' instead of being silently ignored.
-        force=True keeps success=True when some paths fail; check 'failures' either way.
+        gone using the same machinery as move_assets cleanup. An asset that is still
+        referenced is REFUSED unless force=True, and the referencing packages are named,
+        because deleting a referenced asset silently nulls the reference in its consumers.
         """
         from unreal_mcp_server import get_unreal_connection
         try:
