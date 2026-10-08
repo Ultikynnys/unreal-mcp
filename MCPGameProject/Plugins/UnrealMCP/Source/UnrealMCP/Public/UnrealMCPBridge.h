@@ -17,12 +17,8 @@
 
 class FMCPServerRunnable;
 
-/**
- * Editor subsystem for MCP Bridge
- * Handles communication between external tools and the Unreal Editor
- * through a TCP socket connection. Commands are received as JSON and
- * routed to appropriate command handlers.
- */
+// Editor subsystem for the MCP bridge: receives JSON commands over a TCP socket and routes
+// each to its matching handler.
 UCLASS()
 class UNREALMCP_API UUnrealMCPBridge : public UEditorSubsystem
 {
@@ -44,10 +40,9 @@ public:
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, const FString& AccessKey);
 
-	// Full command router: dispatches one command to the matching handler
-	// (editor / blueprint / blueprint-node / project / umg). Used by ExecuteCommand
-	// and injected into the editor handler so batch_execute can reach the full
-	// command surface, not just editor commands.
+	// Full command router (editor / blueprint / blueprint-node / project / umg). ExecuteCommand
+	// uses it for every request and the editor handler's batch_execute for each sub-command, so
+	// batches reach the whole command surface.
 	TSharedPtr<FJsonObject> DispatchCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
 	// Access key the sanctioned MCP server presents on every command. Shared with

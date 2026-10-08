@@ -197,10 +197,8 @@ FRotator FUnrealMCPCommonUtils::GetRotatorFromJson(const TSharedPtr<FJsonObject>
 // Engine state utilities
 bool FUnrealMCPCommonUtils::IsObjectLookupSafe(FString& OutReason)
 {
-    // StaticFindObjectFast() fatal-asserts in the engine (UObjectGlobals.cpp:
-    // "Illegal call to StaticFindObjectFast() while serializing object data or
-    // garbage collecting!") when either of these globals is set. Match the engine's
-    // own conditions so callers refuse the lookup instead of crashing the editor.
+    // StaticFindObjectFast() fatal-asserts while serializing object data or garbage collecting;
+    // match the engine's own conditions so callers refuse the lookup instead of crashing.
     if (GIsSavingPackage)
     {
         OutReason = TEXT("editor is saving a package (GIsSavingPackage); asset lookups are unsafe until the save completes");
@@ -1387,10 +1385,8 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Node layout / placement validation (headless): estimate node boxes and reject
-// placements that would overlap an existing node, so the tools never stack nodes.
-// ---------------------------------------------------------------------------
+// Node layout / placement validation (headless): estimate node boxes and reject placements
+// that would overlap an existing node, so the tools never stack nodes.
 
 FVector2D FUnrealMCPCommonUtils::EstimateNodeSize(const UEdGraphNode* Node)
 {
@@ -1503,10 +1499,9 @@ bool FUnrealMCPCommonUtils::ValidateNodeBounds(UEdGraph* Graph, UEdGraphNode* Ne
         return false;
     }
 
-    // Drift cap: the new node must land within the box of the OTHER nodes plus a
-    // generous margin, so a single astronomical jump is rejected while the box grows
-    // normally. Structural nodes (knots/comments) are ignored so a stray reroute can't
-    // define -- or be judged against -- the layout area.
+    // Drift cap: the new node must land within the other nodes' box plus a generous margin, so
+    // one astronomical jump is rejected while the box grows normally. Structural nodes
+    // (knots/comments) are ignored, so a stray reroute cannot define the layout area.
     FVector2D Min(FLT_MAX, FLT_MAX);
     FVector2D Max(-FLT_MAX, -FLT_MAX);
     int32 OtherCount = 0;
@@ -1840,11 +1835,9 @@ void FUnrealMCPCommonUtils::LayeredLayout(const FLayoutInput& In, float ColGap, 
         }
     }
 
-    // Coordinate assignment / straightening: pull each node toward the mean y of its
-    // neighbours -- this is what minimises connection length and removes the diagonal
-    // swoop -- then resolve within-column overlap by pushing nodes apart. Alternating
-    // left->right (predecessors) and right->left (successors) sweeps converge to straight,
-    // short wires.
+    // Straightening: pull each node toward the mean y of its neighbours (what minimises
+    // connection length and removes the diagonal swoop), then push apart within-column overlap.
+    // Alternating predecessor/successor sweeps converge to straight, short wires.
     auto AlignRank = [&](int32 r, const TArray<TArray<int32>>& Neighbors)
     {
         if (RankNodes[r].Num() == 0) { return; }
@@ -1860,10 +1853,9 @@ void FUnrealMCPCommonUtils::LayeredLayout(const FLayoutInput& In, float ColGap, 
         }
         SortedByWant.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
 
-        // Anchor the block at the topmost desired y and stack downward. Anchoring (rather
-        // than re-centring on the mean) keeps the pass drift-free: each rank is pulled
-        // straight toward its already-placed predecessors, mirroring them, with no
-        // feedback loop to walk the whole layout off-origin.
+        // Anchor the block at the topmost desired y and stack downward: anchoring, rather than
+        // re-centring on the mean, keeps the pass drift-free, so each rank mirrors its placed
+        // predecessors instead of walking the layout off-origin.
         float Y = SortedByWant[0].Key;
         for (const TPair<float, int32>& D : SortedByWant)
         {

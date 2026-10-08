@@ -72,10 +72,9 @@
 
 namespace
 {
-    // Shared secret: the sanctioned MCP server (Python/unreal_mcp_server.py,
-    // CONTROL_PLANE_SECRET) presents this on every command. Any request that does
-    // not carry it is refused and handed the control-plane instructions instead of
-    // being executed. Keep this value byte-for-byte identical to the Python side.
+    // Shared secret: the sanctioned server (Python/unreal_mcp_server.py, CONTROL_PLANE_SECRET)
+    // presents it on every command; a request without it is refused and handed the control-plane
+    // instructions. Keep it byte-for-byte identical to the Python side.
     const TCHAR* GMCPControlPlaneKey =
         TEXT("9f2c7a1e5b8d3406af61e9c04d7b2a83f5c1d0e46b9372af8c5d1e6b0a4932c7");
 
@@ -250,11 +249,9 @@ FString UUnrealMCPBridge::GetControlPlaneInstructions()
     return FString(GMCPControlPlaneInstructions);
 }
 
-// Full command router. Maps a single command name to the handler that owns it.
-// ExecuteCommand calls this for every top-level request, and the editor handler's
-// batch_execute calls it for each batched sub-command, so batches reach the entire
-// command surface (editor + blueprint + blueprint-node + project + umg), not just
-// editor commands.
+// Full command router: one command name to the owning handler. ExecuteCommand calls it for
+// every top-level request and the editor handler's batch_execute for each sub-command, so
+// batches reach the whole surface (editor + blueprint + blueprint-node + project + umg).
 TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
     // ping / reload_server touch no UObjects and must stay reachable even while the
@@ -405,16 +402,14 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     auto DispatchOnGameThread = [this, CommandType, Params, Promise]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
-        // Stamp the contract version on EVERY reply (success, error, and the modal/busy
-        // refusals) so a stale plugin is detectable on any call, not just a get_capabilities
-        // probe. The server reads MCP_PROTOCOL_VERSION from the same header and fails closed
-        // when this does not match.
+        // Stamp the contract version on EVERY reply (success, error, modal/busy refusals) so a stale
+        // plugin is detectable on any call, not just a get_capabilities probe. The server reads
+        // MCP_PROTOCOL_VERSION from the same header and fails closed on a mismatch.
         ResponseJson->SetStringField(TEXT("protocol"), MCP_PROTOCOL_VERSION);
         
-        // For the duration of this call, treat the engine as an unattended script so any
-        // FMessageDialog/prompt auto-answers its default instead of opening a modal that
-        // would block the game thread (and with it every later request). Restored on every
-        // exit path by TGuardValue.
+        // For this call, treat the engine as an unattended script so any FMessageDialog/prompt
+        // auto-answers its default instead of opening a modal that would block the game thread (and
+        // with it every later request). TGuardValue restores it on every exit path.
         TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 
         // The snapshot is written by a thread that is NOT the game thread, so it keeps
@@ -529,14 +524,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         Promise->SetValue(ResultString);
     };
     
-    // execute_python runs user-supplied code. If that code performs a synchronous asset
-    // import (AssetTools.ImportAssetTasks) or any other task-graph wait, it re-enters the
-    // game-thread task processor. Via AsyncTask the lambda already runs inside that
-    // processor (RecursionGuard == 1), so the re-entry trips
-    // "++Queue(QueueIndex).RecursionGuard == 1" in TaskGraph.cpp and aborts the editor.
-    // Dispatching on the core ticker starts the guard at 0 - the same safe point
-    // HandleImportAsset uses for its deferred import. Every other command keeps AsyncTask
-    // so modal-time commands (e.g. recover_editor) still dispatch while the ticker is paused.
+    // execute_python runs user code, and a synchronous asset import re-enters the game-thread
+    // task processor; inside AsyncTask (RecursionGuard == 1) that trips the TaskGraph abort, so
+    // it dispatches on the core ticker (guard 0). Others keep AsyncTask for modal-time recovery.
     if (CommandType == TEXT("execute_python"))
     {
         FTSTicker::GetCoreTicker().AddTicker(
@@ -577,10 +567,8 @@ void UUnrealMCPBridge::ReloadServer()
 
 void UUnrealMCPBridge::RestartServerDeferred()
 {
-    // The C++ bridge cannot hot-reload its own module, and tearing the listener
-    // down here (StopServer + StartServer) frees :55557 for about a second. The
-    // in-editor Python MCP server started by init_unreal.py grabs it in that
-    // window and silently takes over the backend, so the C++ bridge stopped
-    // answering after every reload. Keep the already-bound listener alive instead.
+    // The bridge cannot hot-reload its own module, and Stop/StartServer frees :55557 for about a
+    // second - long enough for the in-editor Python server from init_unreal.py to grab it and
+    // silently take over. Keep the already-bound listener alive instead.
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Reload requested - listener kept bound (C++ bridge has no hot-reload)"));
 }

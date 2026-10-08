@@ -6,20 +6,9 @@
 #include "HAL/Runnable.h"
 #include "HAL/ThreadSafeBool.h"
 
-/**
- * Diagnostic snapshot of the bridge, written to Saved/MCP/bridge_state.json by a thread
- * that is NOT the game thread.
- *
- * Why a separate thread: every command is dispatched on the game thread, so when the game
- * thread is blocked (a modal with no one to answer it, a long save, a slow task) the bridge
- * cannot answer anything at all - not even ping. This heartbeat keeps writing, so the
- * reason survives: the reader sees the command that was in flight, how long the game thread
- * has gone without ticking, and the last modal that was on screen.
- *
- * It records nothing but plain data: no UObjects, no Slate calls off the game thread, no
- * engine state. A stale file is inert - nothing is driven from it, it is only read by the
- * lifecycle tooling when diagnosing a stuck editor.
- */
+// Diagnostic snapshot of the bridge, written to Saved/MCP/bridge_state.json by a thread that
+// is NOT the game thread: when the game thread blocks (a modal, a long save) the heartbeat
+// still records the in-flight command, the stall length and the last modal. Plain data only.
 class FMCPStateSnapshot
 {
 public:

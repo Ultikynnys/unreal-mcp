@@ -42,6 +42,8 @@ CHECKS: list[tuple[str, str, tuple[str, ...]]] = [
     ("modal + failure guards", "test_modal_and_failure_guards.py", ()),
     ("editor lifecycle helpers", "test_editor_process.py", ()),
     ("asset tool wrappers", "test_asset_tools.py", ()),
+    ("comment checker unit test", "test_check_comment_length.py", ()),
+    ("C++ comment length", "check_comment_length.py", ()),
     ("battery runner", "test_run_checks.py", ()),
 ]
 

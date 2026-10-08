@@ -136,11 +136,9 @@ public:
     // Removes every reroute (knot) node in the graph; used before rebuilding routing.
     static void RemoveStructuralKnots(UEdGraph* Graph, UBlueprint* Blueprint);
 
-    // Engine state utilities
-    // Returns true only when it is safe to perform object/asset lookups (LoadObject,
-    // LoadAsset, StaticFindObject chains). The engine fatal-asserts those calls while a
-    // package is being saved (GIsSavingPackage) or while the game thread is garbage
-    // collecting, which crashes the editor. When false, OutReason explains why.
+    // Engine state utilities: safe-to-lookup guard. The engine fatal-asserts LoadObject /
+    // LoadAsset / StaticFindObject chains while saving (GIsSavingPackage) or garbage collecting;
+    // when this returns false, OutReason explains why.
     static bool IsObjectLookupSafe(FString& OutReason);
 
     // Property utilities

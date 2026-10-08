@@ -127,11 +127,9 @@ namespace
     // Python pin cleanup for world switches
     // ---------------------------------------------------------------------
 
-    // World switches (NewLevel / LoadLevel / deleting the open map) tear down the old
-    // world package and GC it. FPyReferenceCollector keeps UObjects alive while Python
-    // still references them, and Public-scope execute_python leaves such references in
-    // __main__ globals, pinning the outgoing world and tripping the "World memory
-    // leaks" ensure (EditorServer.cpp) during the switch. Clear them first.
+    // World switches tear down the old world package and GC it, and Public-scope execute_python
+    // leaves UObject references in __main__ globals that pin it, tripping the "World memory
+    // leaks" ensure. Clear the Python pins first.
     void ClearPythonPinsAndGC()
     {
         IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
@@ -169,14 +167,9 @@ namespace
     TMap<FString, TSharedPtr<FImportJobState>> GImportJobs;
     FCriticalSection GImportJobsMutex;
 
-    // ---------------------------------------------------------------------
-    // Async blueprint-plan jobs (polled via get_plan_status)
-    //
-    // apply_blueprint_plan parses a plan file, records a job here, and returns a
-    // job id immediately. A core-ticker lambda then applies the plan a chunk at a
-    // time on the game thread, so a large plan never blocks the MCP socket's
-    // response and never runs inside the dispatching game-thread task.
-    // ---------------------------------------------------------------------
+    // Async blueprint-plan jobs (polled via get_plan_status): apply_blueprint_plan records a job
+    // and returns an id at once, and a core-ticker lambda applies it a chunk at a time on the
+    // game thread, so a large plan never blocks the socket or nests in the dispatching task.
 
     struct FBlueprintPlanJobState
     {
@@ -217,11 +210,8 @@ namespace
     TMap<FString, TSharedPtr<FBlueprintPlanJobState>> GPlanJobs;
     FCriticalSection GPlanJobsMutex;
 
-    // ---------------------------------------------------------------------
-    // Generic async jobs (polled via get_job_status)
-    //
-    // Native asset operations may block a tick; jobs let callers poll between operations.
-    // ---------------------------------------------------------------------
+    // Generic async jobs (polled via get_job_status): native asset operations can block a tick,
+    // so callers poll between operations.
     struct FMcpJobState
     {
         FString Kind;               // e.g. "move_assets"
@@ -407,11 +397,9 @@ namespace
         }
     }
 
-    // Destroys actors through UEditorActorSubsystem so the editor's selection set, layers,
-    // and typed-element registry stay consistent. Bypassing this (raw Actor->Destroy())
-    // leaves dangling typed-element references and trips the TypedElementRegistry assertion
-    // ("Element type ID has not been registered"). Returns true only when every actor was
-    // destroyed; callers must NOT silently fall back to Actor->Destroy().
+    // Destroy through UEditorActorSubsystem so the selection set, layers and typed-element
+    // registry stay consistent; raw Actor->Destroy() trips the TypedElementRegistry assert.
+    // Returns true only when every actor was destroyed: never fall back to Actor->Destroy().
     bool DestroyActorsViaEditorSubsystem(const TArray<AActor*>& Actors)
     {
         if (Actors.Num() == 0)
@@ -505,11 +493,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
-// Recover from the "restore unsaved files" crash-recovery prompt that stalls startup after
-// an abnormal shutdown. That prompt is driven by Saved/Autosaves/PackageRestoreData.json, so
-// we (1) delete the recovery state so it cannot recur, then (2) dismiss the now-stale
-// recovery modal so the core ticker resumes. Runs on the game thread via the bridge's
-// AsyncTask, which still dispatches while a modal is up.
+// Recover from the "restore unsaved files" prompt that stalls startup after an abnormal
+// shutdown: delete Saved/Autosaves/PackageRestoreData.json so it cannot recur, then dismiss
+// the stale modal. Runs via AsyncTask, which still dispatches while a modal is up.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRecoverEditor(const TSharedPtr<FJsonObject>& Params)
 {
     int32 FilesRemoved = 0;
@@ -1230,10 +1216,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteLevel(const TShare
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Refusing to delete the currently open level (set force=true)"));
     }
 
-    // Deleting the open map unloads its world; release lingering Python pins first
-    // (same "World memory leaks" ensure hazard as create_level / load_level).
-    // The file cannot be removed while its world is the active one, so a forced delete
-    // of the open level switches to a blank untitled map before removing it.
+    // Deleting the open map unloads its world, so release lingering Python pins first (the same
+    // "World memory leaks" hazard as create_level / load_level). The file cannot be removed
+    // while its world is active, so a forced delete switches to a blank map first.
     if (bForce && !CurrentPackage.IsEmpty() && MapPackage.Equals(CurrentPackage, ESearchCase::IgnoreCase))
     {
         if (GEditor)
@@ -1772,10 +1757,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetJobStatus(const TShar
     return ResultObj;
 }
 
-// list_redirectors: enumerate ObjectRedirectors under a path (the clutter left behind
-// when rename_asset moves a referenced asset). referencer_count is how many packages
-// still resolve through the old path. resolve_destination loads each redirector to
-// report where it now points (slower, so off by default).
+// list_redirectors: enumerate ObjectRedirectors under a path (the clutter a rename leaves).
+// referencer_count is how many packages still resolve the old path; resolve_destination
+// loads each to report where it points (slower, off by default).
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleListRedirectors(const TSharedPtr<FJsonObject>& Params)
 {
     FString Path = TEXT("/Game");
@@ -1835,10 +1819,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleListRedirectors(const TS
     return ResultObj;
 }
 
-// fixup_redirectors: the content-browser "Fix Up Redirectors in Folder", scripted. For
-// every ObjectRedirector under the path it resaves the packages still referencing the
-// old path and (by default) deletes the redirector - the piece UE's Python API cannot
-// do (no fix_references). Runs as an async job; poll get_job_status.
+// fixup_redirectors: scripted "Fix Up Redirectors in Folder". Resaves the packages still
+// referencing the old path and (by default) deletes the redirector - what UE's Python API
+// cannot do (no fix_references). Async job; poll get_job_status.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFixupRedirectors(const TSharedPtr<FJsonObject>& Params)
 {
     if (AssetMutationBusy()) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another asset mutation job is running")); }
@@ -1934,14 +1917,9 @@ namespace
         return Assets.Num() > 0 || FindPackage(nullptr, *Package) || FPackageName::DoesPackageExist(Package);
     }
 
-    // Dialog-free equivalent of IAssetTools::FixupReferencers: that API always ends in a
-    // modal "Redirector Update Report" dialog, which blocks unattended restructuring, and
-    // ObjectTools::ConsolidateObjects raises its own "Critical Failure" dialog when the
-    // stale redirector resists deletion. Never call either from job code. The sequence
-    // here reproduces their post-dialog outcome: rewire in-memory referencers to the
-    // destination, SAVE those referencers, then collect garbage and delete the stale
-    // redirector. Saving before deletion is what lets the loaded-level/blueprint case
-    // release the old references so the redirector package can go away.
+    // Dialog-free FixupReferencers: IAssetTools ends in a modal report and ConsolidateObjects
+    // raises "Critical Failure" on a stubborn redirector, so neither is called. Saving rewired
+    // referencers before the GC+delete is what releases a loaded level/blueprint's old refs.
     bool FixAndVerifyRedirector(const FString& PackageName, bool bDelete, FString& Error, bool bApplyFixup)
     {
         IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
@@ -2037,10 +2015,9 @@ namespace
             Error = TEXT("Source redirector remains; check read-only packages/source control, then run fixup_redirectors");
             return false;
         }
-        // A force-deleted source package can leave stale in-memory registry edges behind
-        // (the open map resolved the import before the rewire). Edges pointing at a
-        // package that no longer exists in memory or on disk cannot resolve, so they are
-        // harmless; only fail when the package itself is still real.
+        // A force-deleted source package leaves stale in-memory registry edges (the open map
+        // resolved the import before the rewire). Edges to a package that exists in neither memory
+        // nor on disk cannot resolve and are harmless; fail only when the package is still real.
         if (bDelete && !FPackageName::DoesPackageExist(PackageName) && !FindObject<UPackage>(nullptr, *PackageName))
         {
             return true;
@@ -2232,17 +2209,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
     return Result;
 }
 
-// resave_packages: load + save packages (by explicit list, or everything under a path).
-// Loading resolves any redirector imports and saving writes the new paths, which is the
-// scriptable substitute for "load + resave every referencing package" before deleting
-// redirectors. Runs as an async job; poll get_job_status.
+// resave_packages: load + save packages (explicit list, or everything under a path). Loading
+// resolves redirector imports and saving writes the new paths - the scriptable "load +
+// resave every referencing package" before deleting redirectors. Async; poll get_job_status.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleResavePackages(const TSharedPtr<FJsonObject>& Params)
 {
     if (AssetMutationBusy()) { return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another asset mutation job is running")); }
-    // Resave works at the ASSET level: UEditorAssetLibrary::SaveAsset loads the asset
-    // (which resolves redirector imports through the new path) and saves its package.
-    // This is the scriptable substitute for "load + resave every referencing package"
-    // before deleting redirectors. It uses the editor-scripting library rather than
+    // Resave works at the asset level: UEditorAssetLibrary::SaveAsset loads the asset (resolving
+    // redirector imports through the new path) and saves its package. Preferred over
     // UEditorLoadingAndSavingUtils, whose header is not exported on this engine's path.
     TArray<FString> AssetPaths;
 
@@ -2317,23 +2291,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleResavePackages(const TSh
     return ResultObj;
 }
 
-// apply_blueprint_plan: build a whole graph from a plan file in one call.
-//
-// Plan schema:
-//   {
-//     "nodes":    [ {"ref":"n3","op":"node","node_type":"variable_get","params":{...},"pos":[x,y]},
-//                   {"ref":"n4","op":"function","function_name":"Reset","target":"...","params":{...},"pos":[x,y]},
-//                   {"ref":"n5","op":"component_ref","component_name":"Mesh","pos":[x,y]},
-//                   {"ref":"k1","op":"reroute","pos":[x,y]} ],
-//     "edges":    [ {"s":"n3","sp":"OutPin","t":"n4","tp":"InPin"} ],
-//     "defaults": [ {"ref":"n4","pin":"B","value":1} ]
-//   }
-// Each op is routed through the shared command router (SubCommandRouter), so this
-// reuses the real handlers (add_blueprint_node / add_blueprint_function_node /
-// add_blueprint_get_self_component_reference / add_blueprint_reroute_node /
-// connect_blueprint_nodes / set_blueprint_node_pin_default) rather than
-// duplicating node-creation logic. Refs created here are recorded and resolved for
-// edges/defaults, so the plan wires symbolically without a GUID round-trip.
+// apply_blueprint_plan: build a whole graph from a plan in one call. Ops are routed through
+// the shared command router, so the real node handlers do the work and refs wire
+// symbolically with no GUID round-trip. Plan schema: see the tool's documentation.
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleApplyBlueprintPlan(const TSharedPtr<FJsonObject>& Params)
 {
     FString BlueprintName;
@@ -2401,10 +2361,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleApplyBlueprintPlan(const
     Params->TryGetBoolField(TEXT("auto_layout"), bAutoLayoutParam);
     if (bAutoLayoutParam && Job->NodeOps.Num() > 0)
     {
-        // Defer placement to the placing phase: the nodes are created first, then their REAL
-        // sizes are measured and the layout runs over those. Estimating sizes before creation
-        // (the old flat 220x100) undercounted tall nodes -- e.g. Print String ~270 -- and
-        // produced colliding slots. Only the origin and gaps are resolved here.
+        // Defer placement to the placing phase: nodes are created first, then their REAL sizes are
+        // measured. Estimating beforehand (the old flat 220x100) undercounted tall nodes (Print
+        // String ~270) and produced colliding slots. Only the origin and gaps resolve here.
         float ColGap = 36.0f;
         if (Params->HasField(TEXT("col_gap"))) { ColGap = (float)Params->GetNumberField(TEXT("col_gap")); }
         float RowGap = 48.0f;
@@ -3171,10 +3130,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     SpawnTransform.SetScale3D(Scale);
 
     FActorSpawnParameters SpawnParams;
-    // Do NOT force SpawnParams.Name: in the editor world a name clash raises a
-    // modal "name already in use" dialog on the game thread, which blocks the
-    // bridge and makes the command time out. Let UE pick a unique name and set
-    // the display label afterwards instead.
+    // Do NOT force SpawnParams.Name: a clash in the editor world raises a modal "name already
+    // in use" dialog on the game thread, which blocks the bridge and times the command out.
+    // Let UE pick a unique name and set the display label afterwards.
     AActor* NewActor = World->SpawnActor<AActor>(BlueprintClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {

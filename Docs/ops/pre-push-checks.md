@@ -48,6 +48,7 @@ turns a local failure into a red build instead of a blocked push.
 | modal + failure guards | Losing the unattended-script guard, the modal pre-flight or the failure-reason passthrough (the dialog that could block an automated job) |
 | editor lifecycle helpers | The reaper's project scoping, the snapshot-freshness rule, or the crash-marker cleanup regressing |
 | asset tool wrappers | Move/preview defaults, the ambiguous-input guard, or the redirector-cleanup ordering in the C++ moving |
+| C++ comment length | A comment block in the plugin growing past 3 lines: long comments are re-read on every view and every diff, and a comment that restates the code goes stale. One line preferred; raise or lower with `--max-lines` |
 | battery runner | The runner treating a non-zero check as success (it must fail closed) |
 
 ## Adding a check

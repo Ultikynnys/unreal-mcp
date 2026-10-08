@@ -4,10 +4,7 @@
 #include "Json.h"
 #include "Templates/Function.h"
 
-/**
- * Handler class for Editor-related MCP commands
- * Handles viewport control, actor manipulation, and level management
- */
+// Handler class for editor commands: viewport control, actor manipulation, level management.
 class UNREALMCP_API FUnrealMCPEditorCommands
 {
 public:
@@ -16,10 +13,9 @@ public:
     // Handle editor commands
     TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
-    // Injected by the bridge (UUnrealMCPBridge::Initialize). Routes a single
-    // batched sub-command through the full command surface, so batch_execute can
-    // reach blueprint-node / blueprint / project / umg commands, not just editor
-    // commands. When unset, batch_execute falls back to this class's own table.
+    // Injected by the bridge so batch_execute can route a sub-command through the full surface
+    // (blueprint-node / blueprint / project / umg), not just editor commands. Unset means it
+    // falls back to this class's own table.
     using FSubCommandRouter = TFunction<TSharedPtr<FJsonObject>(const FString&, const TSharedPtr<FJsonObject>&)>;
     void SetSubCommandRouter(FSubCommandRouter InRouter) { SubCommandRouter = MoveTemp(InRouter); }
 

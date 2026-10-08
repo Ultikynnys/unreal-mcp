@@ -2159,10 +2159,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleGetBlueprintNodeB
 
     const double StartSeconds = FPlatformTime::Seconds();
 
-    // Single pass over the graph: derive the bounds/count and (optionally) the per-node
-    // payload together, so each node's size is estimated exactly once. The previous version
-    // walked the graph twice (ComputeGraphBounds + a second EstimateNodeSize per node),
-    // doubling the cost of the slowest part.
+    // One pass over the graph derives the bounds and the per-node payload together, so each
+    // node is measured once. The previous version walked it twice, doubling the slowest part.
     FVector2D Min(0.0f, 0.0f);
     FVector2D Max(0.0f, 0.0f);
     int32 Count = 0;

@@ -30,10 +30,9 @@
 
 namespace
 {
-	// Resolve a Widget Blueprint from either a full object path or a bare asset
-	// name. Bare names are tried under /Game/Widgets first (the default location),
-	// then anywhere else under /Game, so widgets created with a custom 'path' can
-	// still be addressed by name.
+	// Resolve a Widget Blueprint from a full object path or a bare name: bare names try
+	// /Game/Widgets first (the default location), then anywhere under /Game, so a widget
+	// created with a custom 'path' is still addressable by name.
 	static UWidgetBlueprint* FindWidgetBlueprintByName(const FString& WidgetName)
 	{
 		if (WidgetName.IsEmpty())
@@ -600,10 +599,9 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 		return Response;
 	}
 
-	// Register the property binding TextBlock.Text -> <BindingName>, the same
-	// binding the UMG designer creates when you drag a variable onto a property.
-	// (The previous implementation built a function graph whose duplicate entry
-	// node made the Blueprint fail to compile.)
+	// Register the property binding TextBlock.Text -> <BindingName>, the binding the UMG
+	// designer creates when you drag a variable onto a property. The previous implementation
+	// built a function graph whose duplicate entry node made the Blueprint fail to compile.
 	TArray<FFieldVariant> FieldChain;
 	FieldChain.Add(FFieldVariant(SourceProperty));
 
