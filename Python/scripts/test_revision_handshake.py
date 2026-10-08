@@ -144,7 +144,7 @@ class PreflightOrderTests(unittest.TestCase):
         conn = server.UnrealConnection()
         sent: list[str] = []
 
-        def fake_dispatch(command, params=None):
+        def fake_dispatch(command, params=None, read_timeout=None):
             sent.append(command)
             if command in raise_on:
                 raise RuntimeError("editor unreachable")
@@ -188,6 +188,51 @@ class PreflightOrderTests(unittest.TestCase):
         self.assertIn("unreachable", result["message"])
         self.assertNotIn("mismatch", result["message"])
 
+
+class BoundedProbeTests(unittest.TestCase):
+    """A probe that cannot be answered must fail fast, not hang past the host's own limit."""
+
+    def test_the_probe_is_bounded_well_below_a_host_limit(self):
+        self.assertGreaterEqual(server.PROBE_READ_TIMEOUT, 1)
+        self.assertLess(server.PROBE_READ_TIMEOUT, 30)
+
+    def test_an_editor_that_never_answers_fails_fast_and_says_where_to_look(self):
+        import socket
+        import threading
+        import time
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        held = []
+
+        def accept_and_never_reply():
+            connection, _ = listener.accept()   # accepted, then silence
+            held.append(connection)
+            time.sleep(5)
+
+        threading.Thread(target=accept_and_never_reply, daemon=True).start()
+
+        original_port = server.UNREAL_PORT
+        original_probe = server.PROBE_READ_TIMEOUT
+        server.UNREAL_PORT = port
+        server.PROBE_READ_TIMEOUT = 0.5
+        try:
+            started = time.time()
+            result = server.UnrealConnection().send_command("get_capabilities")
+            elapsed = time.time() - started
+        finally:
+            server.UNREAL_PORT = original_port
+            server.PROBE_READ_TIMEOUT = original_probe
+            for connection in held:
+                connection.close()
+            listener.close()
+
+        self.assertFalse(result["success"])
+        self.assertLess(elapsed, 10, "the probe must not wait out the long read timeout")
+        self.assertIn("did not answer a ping", result["message"])
+        self.assertIn("bridge_state.json", result["message"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

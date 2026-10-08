@@ -75,6 +75,21 @@ UNREAL_TIMEOUT = int(os.getenv("UNREAL_MCP_TIMEOUT", "60"))
 # that is still running (map loads, batch renames). Keep this generous and separate
 # from the connect timeout above.
 UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
+# The handshake probe must answer inside the MCP host's own tool-call limit (60s in Reasonix+).
+# A call that cannot be answered makes the host tear the stdio session down, and the panel then
+# reads "MCP stdio transport is closed" until the app is restarted. The probe is therefore bounded
+# well below that limit; the long read timeout above stays for real operations (map loads, batch
+# renames) that legitimately keep running.
+PROBE_READ_TIMEOUT = float(os.getenv("UNREAL_MCP_PROBE_TIMEOUT", "8"))
+
+
+class EditorNotAnswering(RuntimeError):
+    """The editor accepted the connection and then said nothing within the bound.
+
+    A distinct type on purpose: it is the ONLY failure the handshake may describe as "the game
+    thread is blocked". A programming error, a bad argument or a refused connection must keep its
+    own message instead of masquerading as a stalled editor.
+    """
 
 # --- Revision handshake -----------------------------------------------------
 # Identity is the commit, not a hand-incremented number: the plugin bakes in the commit it was
@@ -265,10 +280,15 @@ class UnrealConnection:
         self.socket = None
         self.connected = False
 
-    def receive_full_response(self, sock, buffer_size=65536) -> bytes:
-        """Receive a complete response from Unreal, handling chunked data."""
+    def receive_full_response(self, sock, buffer_size=65536, read_timeout=None) -> bytes:
+        """Receive a complete response from Unreal, handling chunked data.
+
+        read_timeout overrides the default: the handshake probe passes its own short bound so a
+        blocked editor fails fast instead of hanging past the caller's own limit.
+        """
         chunks = []
-        sock.settimeout(UNREAL_READ_TIMEOUT)
+        effective_timeout = read_timeout or UNREAL_READ_TIMEOUT
+        sock.settimeout(effective_timeout)
         try:
             while True:
                 chunk = sock.recv(buffer_size)
@@ -296,7 +316,7 @@ class UnrealConnection:
                     logger.warning(f"Error processing response chunk: {str(e)}")
                     continue
         except socket.timeout:
-            logger.warning("Socket timeout during receive after %ss", UNREAL_READ_TIMEOUT)
+            logger.warning("Socket timeout during receive after %ss", effective_timeout)
             if chunks:
                 # If we have some data already, try to use it
                 data = b''.join(chunks)
@@ -306,8 +326,8 @@ class UnrealConnection:
                     return data
                 except Exception:
                     pass
-            raise Exception(
-                f"No response from Unreal within {UNREAL_READ_TIMEOUT}s. The editor may "
+            raise EditorNotAnswering(
+                f"No response from Unreal within {effective_timeout}s. The editor may "
                 f"still be working on this operation - long map loads/saves keep running "
                 f"on the game thread after the read timeout. Check the editor state before "
                 f"retrying, and raise UNREAL_MCP_READ_TIMEOUT if this duration is expected."
@@ -325,7 +345,8 @@ class UnrealConnection:
         with _connection_lock:
             return self._send_command_unlocked(command, params)
 
-    def _dispatch(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+    def _dispatch(self, command: str, params: Dict[str, Any] = None,
+                  read_timeout: float = None) -> Optional[Dict[str, Any]]:
         """One request/response over a fresh socket: connect, send, read, parse, close.
 
         Returns the parsed reply, and raises when the editor cannot be reached, so a
@@ -359,7 +380,7 @@ class UnrealConnection:
             logger.debug(f"Sending command: {command_json}")
             self.socket.sendall(command_json.encode('utf-8'))
 
-            response_data = self.receive_full_response(self.socket)
+            response_data = self.receive_full_response(self.socket, read_timeout=read_timeout)
             response = json.loads(response_data.decode('utf-8'))
             logger.debug(f"Complete response from Unreal: {response}")
             return response
@@ -372,9 +393,23 @@ class UnrealConnection:
             self.socket = None
 
     def _probe_reply(self) -> Dict[str, Any]:
-        """The `ping` reply, used as the handshake: it touches no UObjects. It raises if the
-        editor cannot be reached - a dead editor is a connection problem, not drift."""
-        reply = self._dispatch("ping")
+        """The `ping` reply, used as the handshake: it touches no UObjects.
+
+        Bounded by PROBE_READ_TIMEOUT. An editor that accepts the connection and then says
+        nothing is the case this exists for: raising quickly keeps the host's session alive and
+        turns a silent hang into a message that says where to look. It carries the original error
+        too, so a caller can still tell "not answering" apart from "not reachable".
+        """
+        try:
+            reply = self._dispatch("ping", read_timeout=PROBE_READ_TIMEOUT)
+        except EditorNotAnswering as error:
+            raise EditorNotAnswering(
+                f"The editor accepted the connection but did not answer a ping within "
+                f"{PROBE_READ_TIMEOUT}s, so the game thread is blocked or starved (a modal, a long "
+                f"load, a batch resave). Check Saved/MCP/bridge_state.json for modal_class and "
+                f"game_thread_stalled_seconds, call recover_editor, or reap and restart the editor. "
+                f"Original: {error}"
+            ) from error
         return reply if isinstance(reply, dict) else {}
 
     def _send_command_unlocked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
