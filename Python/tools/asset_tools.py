@@ -16,6 +16,7 @@ the body).
 import logging
 from typing import Dict, List, Any
 from mcp.server.fastmcp import FastMCP, Context
+from tools.mcp_client import call_unreal
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -33,15 +34,7 @@ def register_asset_tools(mcp: FastMCP):
 
         Example: get_job_status(job_id="1f3a9c...")
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_job_status", {"job_id": job_id})
-        except Exception as e:
-            logger.error(f"Error polling job: {e}")
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_job_status", {"job_id": job_id})
 
     @mcp.tool()
     def list_redirectors(
@@ -57,20 +50,12 @@ def register_asset_tools(mcp: FastMCP):
 
         Example: list_redirectors(path="/Game/Art", recursive=True)
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "path": path,
-                "recursive": recursive,
-                "resolve_destination": resolve_destination
-            }
-            return unreal.send_command("list_redirectors", params)
-        except Exception as e:
-            logger.error(f"Error listing redirectors: {e}")
-            return {"success": False, "message": str(e)}
+        params = {
+            "path": path,
+            "recursive": recursive,
+            "resolve_destination": resolve_destination
+        }
+        return call_unreal("list_redirectors", params)
 
     @mcp.tool()
     def fixup_redirectors(
@@ -88,21 +73,13 @@ def register_asset_tools(mcp: FastMCP):
 
         Example: fixup_redirectors(path="/Game/Art", recursive=True)
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "path": path,
-                "recursive": recursive,
-                "delete_redirectors": delete_redirectors,
-                "batch_size": batch_size
-            }
-            return unreal.send_command("fixup_redirectors", params)
-        except Exception as e:
-            logger.error(f"Error fixing up redirectors: {e}")
-            return {"success": False, "message": str(e)}
+        params = {
+            "path": path,
+            "recursive": recursive,
+            "delete_redirectors": delete_redirectors,
+            "batch_size": batch_size
+        }
+        return call_unreal("fixup_redirectors", params)
 
     @mcp.tool()
     def move_assets(
@@ -127,26 +104,18 @@ def register_asset_tools(mcp: FastMCP):
 
         Example: move_assets(assets=["/Game/Weapons/Pistol/Pistol_01"], destination_path="/Game/Art/Weapons/Pistol")
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            if moves is not None and (assets is not None or destination_path is not None):
-                return {"success": False, "message": "Provide only moves, or assets with destination_path."}
-            params: Dict[str, Any] = {"dry_run": dry_run, "fixup_redirectors": fixup_redirectors}
-            if moves:
-                params["moves"] = moves
-            if assets:
-                params["assets"] = assets
-            if destination_path:
-                params["destination_path"] = destination_path
-            if "moves" not in params and not ("assets" in params and "destination_path" in params):
-                return {"success": False, "message": "Provide 'moves', or 'assets' with 'destination_path'."}
-            return unreal.send_command("move_assets", params)
-        except Exception as e:
-            logger.error(f"Error moving assets: {e}")
-            return {"success": False, "message": str(e)}
+        if moves is not None and (assets is not None or destination_path is not None):
+            return {"success": False, "message": "Provide only moves, or assets with destination_path."}
+        params: Dict[str, Any] = {"dry_run": dry_run, "fixup_redirectors": fixup_redirectors}
+        if moves:
+            params["moves"] = moves
+        if assets:
+            params["assets"] = assets
+        if destination_path:
+            params["destination_path"] = destination_path
+        if "moves" not in params and not ("assets" in params and "destination_path" in params):
+            return {"success": False, "message": "Provide 'moves', or 'assets' with 'destination_path'."}
+        return call_unreal("move_assets", params)
 
     @mcp.tool()
     def move_folder(
@@ -163,20 +132,12 @@ def register_asset_tools(mcp: FastMCP):
         Returns a job_id (kind move_assets); poll get_job_status until done or failed.
         Stops on cleanup failure without rolling back earlier moves. Nested folders are rejected.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("move_folder", {
+        return call_unreal("move_folder", {
                 "source_path": source_path,
                 "destination_path": destination_path,
                 "recursive": recursive,
                 "dry_run": dry_run
             })
-        except Exception as e:
-            logger.error(f"Error moving folder: {e}")
-            return {"success": False, "message": str(e)}
 
     @mcp.tool()
     def resave_packages(
@@ -193,22 +154,14 @@ def register_asset_tools(mcp: FastMCP):
 
         Example: resave_packages(path="/Game/Maps", recursive=True)
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params: Dict[str, Any] = {"recursive": recursive}
-            if packages:
-                params["packages"] = packages
-            if path:
-                params["path"] = path
-            if "packages" not in params and "path" not in params:
-                return {"success": False, "message": "Provide 'packages' or 'path'."}
-            return unreal.send_command("resave_packages", params)
-        except Exception as e:
-            logger.error(f"Error resaving packages: {e}")
-            return {"success": False, "message": str(e)}
+        params: Dict[str, Any] = {"recursive": recursive}
+        if packages:
+            params["packages"] = packages
+        if path:
+            params["path"] = path
+        if "packages" not in params and "path" not in params:
+            return {"success": False, "message": "Provide 'packages' or 'path'."}
+        return call_unreal("resave_packages", params)
 
     @mcp.tool()
     def get_asset_graph(
@@ -223,19 +176,11 @@ def register_asset_tools(mcp: FastMCP):
         this asset), or 'both' (default). Follows a redirector to the real asset when
         the given path is stale, so a pre-move impact check works at any cleanup stage.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_asset_graph", {
+        return call_unreal("get_asset_graph", {
                 "asset_path": asset_path,
                 "direction": direction,
                 "follow_redirectors": follow_redirectors,
             })
-        except Exception as e:
-            logger.error(f"Error getting asset graph: {e}")
-            return {"success": False, "message": str(e)}
 
     @mcp.tool()
     def delete_assets(
@@ -250,17 +195,9 @@ def register_asset_tools(mcp: FastMCP):
         referenced is REFUSED unless force=True, and the referencing packages are named,
         because deleting a referenced asset silently nulls the reference in its consumers.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("delete_assets", {
+        return call_unreal("delete_assets", {
                 "asset_paths": asset_paths,
                 "force": force,
             })
-        except Exception as e:
-            logger.error(f"Error deleting assets: {e}")
-            return {"success": False, "message": str(e)}
 
     logger.info("Asset tools registered successfully")

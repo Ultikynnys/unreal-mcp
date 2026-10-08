@@ -7,6 +7,7 @@ This module provides tools for controlling the Unreal Editor viewport and other 
 import logging
 from typing import Dict, List, Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
+from tools.mcp_client import call_unreal, require_vectors3
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -23,25 +24,13 @@ def register_editor_tools(mcp: FastMCP):
         offset: int = 0
     ) -> Dict[str, Any]:
         """Get a paginated and filterable list of actors in the current level."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.warning("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "class_filter": class_filter,
-                "search": search or "",
-                "limit": limit,
-                "offset": offset
-            }
-            response = unreal.send_command("get_actors_in_level", params)
-            if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
-            return response
-        except Exception as e:
-            logger.error(f"Error getting actors: {e}")
-            return {"success": False, "message": str(e)}
+        params = {
+            "class_filter": class_filter,
+            "search": search or "",
+            "limit": limit,
+            "offset": offset
+        }
+        return call_unreal("get_actors_in_level", params)
 
     @mcp.tool()
     def spawn_actor(
@@ -64,74 +53,26 @@ def register_editor_tools(mcp: FastMCP):
         Returns:
             Dict containing the created actor's properties
         """
-        from unreal_mcp_server import get_unreal_connection
-        
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # Send the type verbatim; the C++ handler matches it case-insensitively.
-            params = {
-                "name": name,
-                "type": type,
-                "location": location,
-                "rotation": rotation,
-                "allow_duplicate": allow_duplicate
-            }
-            
-            # Validate location and rotation formats
-            for param_name in ["location", "rotation"]:
-                param_value = params[param_name]
-                if not isinstance(param_value, list) or len(param_value) != 3:
-                    logger.error(f"Invalid {param_name} format: {param_value}. Must be a list of 3 float values.")
-                    return {"success": False, "message": f"Invalid {param_name} format. Must be a list of 3 float values."}
-                # Ensure all values are float
-                params[param_name] = [float(val) for val in param_value]
-            
-            logger.info(f"Creating actor '{name}' of type '{type}' with params: {params}")
-            response = unreal.send_command("spawn_actor", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            # Log the complete response for debugging
-            logger.info(f"Actor creation response: {response}")
-            
-            # Handle error responses correctly
-            if response.get("success") is False:
-                error_message = response.get("message", "Unknown error")
-                logger.error(f"Error creating actor: {error_message}")
-                return {"success": False, "message": error_message}
-            
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error creating actor: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # Send the type verbatim; the C++ handler matches it case-insensitively.
+        params = {
+            "name": name,
+            "type": type,
+            "location": location,
+            "rotation": rotation,
+            "allow_duplicate": allow_duplicate
+        }
+        error = require_vectors3(params, "location", "rotation")
+        if error:
+            return {"success": False, "message": error}
+        return call_unreal("spawn_actor", params)
     
     @mcp.tool()
     def delete_actor(ctx: Context, name: str) -> Dict[str, Any]:
         """Delete an actor by name."""
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            response = unreal.send_command("delete_actor", {
+        return call_unreal("delete_actor", {
                 "name": name
             })
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-            
-        except Exception as e:
-            logger.error(f"Error deleting actor: {e}")
-            return {"success": False, "message": str(e)}
     
     @mcp.tool()
     def set_actor_transform(
@@ -142,28 +83,15 @@ def register_editor_tools(mcp: FastMCP):
         scale: List[float] = None
     ) -> Dict[str, Any]:
         """Set the transform of an actor."""
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            params = {"name": name}
-            if location is not None:
-                params["location"] = location
-            if rotation is not None:
-                params["rotation"] = rotation
-            if scale is not None:
-                params["scale"] = scale
-                
-            response = unreal.send_command("set_actor_transform", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-            
-        except Exception as e:
-            logger.error(f"Error setting transform: {e}")
-            return {"success": False, "message": str(e)}
+        params = {"name": name}
+        if location is not None:
+            params["location"] = location
+        if rotation is not None:
+            params["rotation"] = rotation
+        if scale is not None:
+            params["scale"] = scale
+        return call_unreal("set_actor_transform", params)
     
     @mcp.tool()
     def set_actor_property(
@@ -183,78 +111,14 @@ def register_editor_tools(mcp: FastMCP):
         Returns:
             Dict containing response from Unreal with operation status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            response = unreal.send_command("set_actor_property", {
+        return call_unreal("set_actor_property", {
                 "name": name,
                 "property_name": property_name,
                 "property_value": property_value
             })
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Set actor property response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error setting actor property: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
 
     # @mcp.tool() commented out because it's buggy
-    def focus_viewport(
-        ctx: Context,
-        target: str = None,
-        location: List[float] = None,
-        distance: float = 1000.0,
-        orientation: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Focus the viewport on a specific actor or location.
-        
-        Args:
-            target: Name of the actor to focus on (if provided, location is ignored)
-            location: [X, Y, Z] coordinates to focus on (used if target is None)
-            distance: Distance from the target/location
-            orientation: Optional [Pitch, Yaw, Roll] for the viewport camera
-            
-        Returns:
-            Response from Unreal Engine
-        """
-        from unreal_mcp_server import get_unreal_connection
-        
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            params = {}
-            if target:
-                params["target"] = target
-            elif location:
-                params["location"] = location
-            
-            if distance:
-                params["distance"] = distance
-                
-            if orientation:
-                params["orientation"] = orientation
-                
-            response = unreal.send_command("focus_viewport", params)
-            return response or {}
-            
-        except Exception as e:
-            logger.error(f"Error focusing viewport: {e}")
-            return {"success": False, "message": str(e)}
 
     @mcp.tool()
     def spawn_blueprint_actor(
@@ -276,57 +140,21 @@ def register_editor_tools(mcp: FastMCP):
         Returns:
             Dict containing the spawned actor's properties
         """
-        from unreal_mcp_server import get_unreal_connection
-        
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # Ensure all parameters are properly formatted
-            params = {
-                "blueprint_name": blueprint_name,
-                "actor_name": actor_name,
-                "location": location or [0.0, 0.0, 0.0],
-                "rotation": rotation or [0.0, 0.0, 0.0]
-            }
-            
-            # Validate location and rotation formats
-            for param_name in ["location", "rotation"]:
-                param_value = params[param_name]
-                if not isinstance(param_value, list) or len(param_value) != 3:
-                    logger.error(f"Invalid {param_name} format: {param_value}. Must be a list of 3 float values.")
-                    return {"success": False, "message": f"Invalid {param_name} format. Must be a list of 3 float values."}
-                # Ensure all values are float
-                params[param_name] = [float(val) for val in param_value]
-            
-            logger.info(f"Spawning blueprint actor with params: {params}")
-            response = unreal.send_command("spawn_blueprint_actor", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Spawn blueprint actor response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error spawning blueprint actor: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "actor_name": actor_name,
+            "location": location or [0.0, 0.0, 0.0],
+            "rotation": rotation or [0.0, 0.0, 0.0]
+        }
+        error = require_vectors3(params, "location", "rotation")
+        if error:
+            return {"success": False, "message": error}
+        return call_unreal("spawn_blueprint_actor", params)
 
     @mcp.tool()
     def get_capabilities(ctx: Context) -> Dict[str, Any]:
         """Get server version, supported command types, and feature flags from Unreal Engine."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_capabilities", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_capabilities", {})
 
     @mcp.tool()
     def query_assets(
@@ -339,46 +167,25 @@ def register_editor_tools(mcp: FastMCP):
         offset: int = 0
     ) -> Dict[str, Any]:
         """Query asset paths with pagination, asset class filtering, and substring search."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "path": path,
-                "recursive": recursive,
-                "asset_class": asset_class,
-                "search": search or "",
-                "limit": limit,
-                "offset": offset
-            }
-            return unreal.send_command("query_assets", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "path": path,
+            "recursive": recursive,
+            "asset_class": asset_class,
+            "search": search or "",
+            "limit": limit,
+            "offset": offset
+        }
+        return call_unreal("query_assets", params)
 
     @mcp.tool()
     def get_asset_details(ctx: Context, asset_path: str) -> Dict[str, Any]:
         """Get bounding box extents, dimensions, and material slots for a StaticMesh or asset."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_asset_details", {"asset_path": asset_path})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_asset_details", {"asset_path": asset_path})
 
     @mcp.tool()
     def get_actor_details(ctx: Context, name: str) -> Dict[str, Any]:
         """Inspect an actor by name, label, or path. Returns world bounds, components, materials, and light settings."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_actor_details", {"name": name})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_actor_details", {"name": name})
 
     @mcp.tool()
     def spawn_mesh_actor(
@@ -392,23 +199,16 @@ def register_editor_tools(mcp: FastMCP):
         allow_duplicate: bool = False
     ) -> Dict[str, Any]:
         """Spawn a StaticMeshActor with a specific static mesh asset into the current level."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "mesh_path": mesh_path,
-                "name": name,
-                "location": location or [0.0, 0.0, 0.0],
-                "rotation": rotation or [0.0, 0.0, 0.0],
-                "scale": scale or [1.0, 1.0, 1.0],
-                "folder_path": folder_path,
-                "allow_duplicate": allow_duplicate
-            }
-            return unreal.send_command("spawn_mesh_actor", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "mesh_path": mesh_path,
+            "name": name,
+            "location": location or [0.0, 0.0, 0.0],
+            "rotation": rotation or [0.0, 0.0, 0.0],
+            "scale": scale or [1.0, 1.0, 1.0],
+            "folder_path": folder_path,
+            "allow_duplicate": allow_duplicate
+        }
+        return call_unreal("spawn_mesh_actor", params)
 
     @mcp.tool()
     def batch_execute(
@@ -426,19 +226,12 @@ def register_editor_tools(mcp: FastMCP):
         changes made over the socket bridge), and actors spawned during the batch are
         destroyed. Returns { results, count, failures, rolled_back }.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "actions": actions,
-                "description": description,
-                "rollback_on_failure": rollback_on_failure
-            }
-            return unreal.send_command("batch_execute", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "actions": actions,
+            "description": description,
+            "rollback_on_failure": rollback_on_failure
+        }
+        return call_unreal("batch_execute", params)
 
     @mcp.tool()
     def set_viewport_camera(
@@ -448,19 +241,12 @@ def register_editor_tools(mcp: FastMCP):
         game_view: bool = None
     ) -> Dict[str, Any]:
         """Set the Unreal Editor active viewport position, orientation, and game-view mode."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "location": location,
-                "rotation": rotation,
-                "game_view": game_view
-            }
-            return unreal.send_command("set_viewport_camera", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "location": location,
+            "rotation": rotation,
+            "game_view": game_view
+        }
+        return call_unreal("set_viewport_camera", params)
 
     @mcp.tool()
     def capture_viewport_screenshot(
@@ -473,17 +259,10 @@ def register_editor_tools(mcp: FastMCP):
         so there is no width/height to set. Use capture_pie_screenshot's width/height to size a
         PIE render.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "filename": filename
-            }
-            return unreal.send_command("capture_viewport_screenshot", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "filename": filename
+        }
+        return call_unreal("capture_viewport_screenshot", params)
 
     @mcp.tool()
     def capture_pie_screenshot(
@@ -509,25 +288,18 @@ def register_editor_tools(mcp: FastMCP):
             height: Image height in pixels (clamped 16..4096, default 720)
             fov: Optional horizontal field of view in degrees
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "filename": filename,
-                "width": width,
-                "height": height
-            }
-            if location is not None:
-                params["location"] = location
-            if rotation is not None:
-                params["rotation"] = rotation
-            if fov is not None:
-                params["fov"] = fov
-            return unreal.send_command("capture_pie_screenshot", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "filename": filename,
+            "width": width,
+            "height": height
+        }
+        if location is not None:
+            params["location"] = location
+        if rotation is not None:
+            params["rotation"] = rotation
+        if fov is not None:
+            params["fov"] = fov
+        return call_unreal("capture_pie_screenshot", params)
 
     @mcp.tool()
     def save_level(
@@ -536,42 +308,21 @@ def register_editor_tools(mcp: FastMCP):
         overwrite: bool = False
     ) -> Dict[str, Any]:
         """Save current level, or save-as to destination_path with overwrite protection."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "destination_path": destination_path,
-                "overwrite": overwrite
-            }
-            return unreal.send_command("save_level", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "destination_path": destination_path,
+            "overwrite": overwrite
+        }
+        return call_unreal("save_level", params)
 
     @mcp.tool()
     def load_level(ctx: Context, map_path: str) -> Dict[str, Any]:
         """Load a map asset and confirm the active editor world."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("load_level", {"map_path": map_path})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("load_level", {"map_path": map_path})
 
     @mcp.tool()
     def execute_python(ctx: Context, code: str) -> Dict[str, Any]:
         """Execute arbitrary Python code inside the running Unreal Editor on the main thread (hardened)."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("execute_python", {"code": code})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("execute_python", {"code": code})
 
 
     @mcp.tool()
@@ -582,19 +333,12 @@ def register_editor_tools(mcp: FastMCP):
         overwrite: bool = False
     ) -> Dict[str, Any]:
         """Create a new level asset in the content browser and switch to it."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "map_path": map_path,
-                "template": template,
-                "overwrite": overwrite
-            }
-            return unreal.send_command("create_level", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "map_path": map_path,
+            "template": template,
+            "overwrite": overwrite
+        }
+        return call_unreal("create_level", params)
 
     @mcp.tool()
     def spawn_mesh_grid(
@@ -611,26 +355,19 @@ def register_editor_tools(mcp: FastMCP):
         folder_path: str = "Environment/Grids"
     ) -> Dict[str, Any]:
         """Spawn a 2D grid of StaticMeshActors atomically inside one transaction."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "mesh_path": mesh_path,
-                "rows": rows,
-                "cols": cols,
-                "spacing_x": spacing_x,
-                "spacing_y": spacing_y,
-                "origin": origin or [0.0, 0.0, 0.0],
-                "rotation": rotation or [0.0, 0.0, 0.0],
-                "scale": scale or [1.0, 1.0, 1.0],
-                "prefix": prefix,
-                "folder_path": folder_path
-            }
-            return unreal.send_command("spawn_mesh_grid", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "mesh_path": mesh_path,
+            "rows": rows,
+            "cols": cols,
+            "spacing_x": spacing_x,
+            "spacing_y": spacing_y,
+            "origin": origin or [0.0, 0.0, 0.0],
+            "rotation": rotation or [0.0, 0.0, 0.0],
+            "scale": scale or [1.0, 1.0, 1.0],
+            "prefix": prefix,
+            "folder_path": folder_path
+        }
+        return call_unreal("spawn_mesh_grid", params)
 
     @mcp.tool()
     def spawn_instanced_mesh(
@@ -641,20 +378,13 @@ def register_editor_tools(mcp: FastMCP):
         folder_path: str = "Environment/Instances"
     ) -> Dict[str, Any]:
         """Spawn a single actor with a HierarchicalInstancedStaticMeshComponent containing multiple instance transforms."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "mesh_path": mesh_path,
-                "instances": instances,
-                "name": name,
-                "folder_path": folder_path
-            }
-            return unreal.send_command("spawn_instanced_mesh", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "mesh_path": mesh_path,
+            "instances": instances,
+            "name": name,
+            "folder_path": folder_path
+        }
+        return call_unreal("spawn_instanced_mesh", params)
 
     @mcp.tool()
     def spawn_light_actor(
@@ -671,26 +401,19 @@ def register_editor_tools(mcp: FastMCP):
         folder_path: str = "Environment/Lighting"
     ) -> Dict[str, Any]:
         """Spawn a configured PointLight, SpotLight, RectLight, or DirectionalLight actor."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "light_type": light_type,
-                "name": name,
-                "location": location or [0.0, 0.0, 0.0],
-                "rotation": rotation or [0.0, 0.0, 0.0],
-                "intensity": intensity,
-                "color": color or [1.0, 1.0, 1.0],
-                "attenuation_radius": attenuation_radius,
-                "source_radius": source_radius,
-                "mobility": mobility,
-                "folder_path": folder_path
-            }
-            return unreal.send_command("spawn_light_actor", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "light_type": light_type,
+            "name": name,
+            "location": location or [0.0, 0.0, 0.0],
+            "rotation": rotation or [0.0, 0.0, 0.0],
+            "intensity": intensity,
+            "color": color or [1.0, 1.0, 1.0],
+            "attenuation_radius": attenuation_radius,
+            "source_radius": source_radius,
+            "mobility": mobility,
+            "folder_path": folder_path
+        }
+        return call_unreal("spawn_light_actor", params)
 
     @mcp.tool()
     def set_actor_folder(
@@ -699,14 +422,7 @@ def register_editor_tools(mcp: FastMCP):
         folder_path: str
     ) -> Dict[str, Any]:
         """Move an actor into a specified folder in the World Outliner."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("set_actor_folder", {"name": name, "folder_path": folder_path})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("set_actor_folder", {"name": name, "folder_path": folder_path})
 
     @mcp.tool()
     def set_actor_material(
@@ -716,55 +432,27 @@ def register_editor_tools(mcp: FastMCP):
         slot_index: int = 0
     ) -> Dict[str, Any]:
         """Assign a Material or Material Instance to an actor's StaticMeshComponent at a specific slot."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "name": name,
-                "material_path": material_path,
-                "slot_index": slot_index
-            }
-            return unreal.send_command("set_actor_material", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "name": name,
+            "material_path": material_path,
+            "slot_index": slot_index
+        }
+        return call_unreal("set_actor_material", params)
 
     @mcp.tool()
     def reload_server(ctx: Context) -> Dict[str, Any]:
         """Hot-reload the Unreal-side server module in place (no editor restart needed)."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("reload_server", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("reload_server", {})
 
     @mcp.tool()
     def delete_level(ctx: Context, map_path: str, force: bool = False) -> Dict[str, Any]:
         """Delete a level asset; refuses to delete the currently open level unless force=True."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("delete_level", {"map_path": map_path, "force": force})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("delete_level", {"map_path": map_path, "force": force})
 
     @mcp.tool()
     def delete_actors_by_prefix(ctx: Context, prefix: str) -> Dict[str, Any]:
         """Delete every actor in the level whose label starts with the given prefix."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("delete_actors_by_prefix", {"prefix": prefix})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("delete_actors_by_prefix", {"prefix": prefix})
 
     @mcp.tool()
     def import_asset(
@@ -786,20 +474,13 @@ def register_editor_tools(mcp: FastMCP):
         options (textures): {"srgb": bool, "is_normal_map": bool,
                              "compression": "default" | "grayscale" | "normalmap"}
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {
-                "sources": sources,
-                "destination_path": destination_path,
-                "replace_existing": replace_existing,
-                "options": options or {}
-            }
-            return unreal.send_command("import_asset", params)
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        params = {
+            "sources": sources,
+            "destination_path": destination_path,
+            "replace_existing": replace_existing,
+            "options": options or {}
+        }
+        return call_unreal("import_asset", params)
 
     @mcp.tool()
     def get_import_status(ctx: Context, job_id: str) -> Dict[str, Any]:
@@ -808,14 +489,7 @@ def register_editor_tools(mcp: FastMCP):
         state is one of queued | running | done | failed. On success, assets lists the
         imported object paths; log carries per-file notes; error is set on failure.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_import_status", {"job_id": job_id})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_import_status", {"job_id": job_id})
 
     @mcp.tool()
     def recover_editor(ctx: Context) -> Dict[str, Any]:
@@ -826,14 +500,7 @@ def register_editor_tools(mcp: FastMCP):
         ticker (so plan / layout jobs never run). This clears that on-disk state and dismisses
         the modal so the editor resumes. Call it right after the bridge connects.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("recover_editor", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("recover_editor", {})
 
     @mcp.tool()
     def console_command(ctx: Context, command: str) -> Dict[str, Any]:
@@ -843,14 +510,7 @@ def register_editor_tools(mcp: FastMCP):
         Mutating commands (exec, quit, gunit, Log off) are refused. Output goes to the
         editor log; the reply reports whether the editor marked the command handled.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("console_command", {"command": command})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("console_command", {"command": command})
 
     @mcp.tool()
     def editor_play(ctx: Context) -> Dict[str, Any]:
@@ -861,14 +521,7 @@ def register_editor_tools(mcp: FastMCP):
         verify loop. PIE start can take a few seconds; poll editor_play again or check
         get_current_level afterwards.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("editor_play", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("editor_play", {})
 
     @mcp.tool()
     def editor_stop(ctx: Context) -> Dict[str, Any]:
@@ -876,37 +529,16 @@ def register_editor_tools(mcp: FastMCP):
 
         Returns state 'stopping' (PIE ends on the next editor tick) or 'not_playing'.
         """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("editor_stop", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("editor_stop", {})
 
     @mcp.tool()
     def list_levels(ctx: Context) -> Dict[str, Any]:
         """List all map (World) assets in /Game with their object paths."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("list_levels", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("list_levels", {})
 
     @mcp.tool()
     def get_current_level(ctx: Context) -> Dict[str, Any]:
         """Get the currently open level: name, package path, and dirty state."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_current_level", {})
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+        return call_unreal("get_current_level", {})
 
     logger.info("Editor tools registered successfully")

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
+import time
 import unittest
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -113,6 +115,31 @@ class OwnerPidTests(unittest.TestCase):
 
     def test_none_when_absent(self):
         self.assertIsNone(editor_process.parse_owner_pid("no owner here"))
+
+
+class SnapshotFreshnessTests(unittest.TestCase):
+    """A leftover snapshot must not be reported as the current state."""
+
+    @staticmethod
+    def _write(directory: str) -> pathlib.Path:
+        path = pathlib.Path(directory) / "bridge_state.json"
+        path.write_text("{}", encoding="utf-8")
+        return path
+
+    def test_recent_file_is_fresh(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(editor_process.snapshot_is_fresh(self._write(d), time.time()))
+
+    def test_old_file_is_stale(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d)
+            old = time.time() - 600
+            os.utime(path, (old, old))
+            self.assertFalse(editor_process.snapshot_is_fresh(path, time.time()))
+
+    def test_missing_file_is_stale(self):
+        self.assertFalse(editor_process.snapshot_is_fresh(
+            pathlib.Path("does_not_exist.json"), time.time()))
 
 
 class ReapTargetTests(unittest.TestCase):

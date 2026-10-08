@@ -10,6 +10,11 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 CPP = ROOT / "MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPEditorCommands.cpp"
 
+# The tool modules import the shared call helper as `tools.mcp_client`, exactly as the
+# server does, so the package root must be importable when a module is loaded by path.
+if str(ROOT / "Python") not in sys.path:
+    sys.path.insert(0, str(ROOT / "Python"))
+
 
 class Registry:
     def __init__(self):
@@ -86,8 +91,9 @@ class AssetToolTests(unittest.TestCase):
 
     def test_transport_failure(self):
         self.connection.send_command.side_effect = RuntimeError("disconnected")
+        # The shared helper reports failures as '<command> failed: <error>' for every tool.
         self.assertEqual(self.tools["move_folder"](None, "/Game/A", "/Game/B"), {
-            "success": False, "message": "disconnected",
+            "success": False, "message": "move_folder failed: disconnected",
         })
 
 

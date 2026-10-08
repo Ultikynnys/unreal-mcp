@@ -7,6 +7,7 @@ This module provides tools for creating and manipulating UMG Widget Blueprints i
 import logging
 from typing import Dict, List, Any
 from mcp.server.fastmcp import FastMCP, Context
+from tools.mcp_client import call_unreal
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -32,36 +33,16 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and widget path
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # The C++ handler reads the blueprint name from "name" (not "widget_name").
-            params = {
-                "name": widget_name,
-                "widget_name": widget_name,
-                "parent_class": parent_class,
-                "path": path
-            }
-            
-            logger.info(f"Creating UMG Widget Blueprint with params: {params}")
-            response = unreal.send_command("create_umg_widget_blueprint", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Create UMG Widget Blueprint response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error creating UMG Widget Blueprint: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # The C++ handler reads the blueprint name from "name" (not "widget_name").
+        params = {
+            "name": widget_name,
+            "widget_name": widget_name,
+            "parent_class": parent_class,
+            "path": path
+        }
+        logger.info(f"Creating UMG Widget Blueprint with params: {params}")
+        return call_unreal("create_umg_widget_blueprint", params)
 
     @mcp.tool()
     def add_text_block_to_widget(
@@ -89,41 +70,21 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and text block properties
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # C++ expects the target widget blueprint as "blueprint_name" and the
-            # new child widget as "widget_name".
-            params = {
-                "blueprint_name": widget_name,
-                "widget_name": text_block_name,
-                "text_block_name": text_block_name,
-                "text": text,
-                "position": position,
-                "size": size,
-                "font_size": font_size,
-                "color": color
-            }
-            
-            logger.info(f"Adding Text Block to widget with params: {params}")
-            response = unreal.send_command("add_text_block_to_widget", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Add Text Block response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding Text Block to widget: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # C++ expects the target widget blueprint as "blueprint_name" and the
+        # new child widget as "widget_name".
+        params = {
+            "blueprint_name": widget_name,
+            "widget_name": text_block_name,
+            "text_block_name": text_block_name,
+            "text": text,
+            "position": position,
+            "size": size,
+            "font_size": font_size,
+            "color": color
+        }
+        logger.info(f"Adding Text Block to widget with params: {params}")
+        return call_unreal("add_text_block_to_widget", params)
 
     @mcp.tool()
     def add_button_to_widget(
@@ -153,42 +114,22 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and button properties
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # C++ expects the target widget blueprint as "blueprint_name" and the
-            # new button child as "widget_name".
-            params = {
-                "blueprint_name": widget_name,
-                "widget_name": button_name,
-                "button_name": button_name,
-                "text": text,
-                "position": position,
-                "size": size,
-                "font_size": font_size,
-                "color": color,
-                "background_color": background_color
-            }
-            
-            logger.info(f"Adding Button to widget with params: {params}")
-            response = unreal.send_command("add_button_to_widget", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Add Button response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding Button to widget: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # C++ expects the target widget blueprint as "blueprint_name" and the
+        # new button child as "widget_name".
+        params = {
+            "blueprint_name": widget_name,
+            "widget_name": button_name,
+            "button_name": button_name,
+            "text": text,
+            "position": position,
+            "size": size,
+            "font_size": font_size,
+            "color": color,
+            "background_color": background_color
+        }
+        logger.info(f"Adding Button to widget with params: {params}")
+        return call_unreal("add_button_to_widget", params)
 
     @mcp.tool()
     def bind_widget_event(
@@ -210,42 +151,21 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and binding information
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # If no function name provided, create one from component and event names
-            if not function_name:
-                function_name = f"{widget_component_name}_{event_name}"
-            
-            # C++ expects the target widget blueprint as "blueprint_name" and the
-            # component to bind as "widget_name".
-            params = {
-                "blueprint_name": widget_name,
-                "widget_name": widget_component_name,
-                "widget_component_name": widget_component_name,
-                "event_name": event_name,
-                "function_name": function_name
-            }
-            
-            logger.info(f"Binding widget event with params: {params}")
-            response = unreal.send_command("bind_widget_event", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Bind widget event response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error binding widget event: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # If no function name provided, create one from component and event names
+        if not function_name:
+            function_name = f"{widget_component_name}_{event_name}"
+        # C++ expects the target widget blueprint as "blueprint_name" and the
+        # component to bind as "widget_name".
+        params = {
+            "blueprint_name": widget_name,
+            "widget_name": widget_component_name,
+            "widget_component_name": widget_component_name,
+            "event_name": event_name,
+            "function_name": function_name
+        }
+        logger.info(f"Binding widget event with params: {params}")
+        return call_unreal("bind_widget_event", params)
 
     @mcp.tool()
     def add_widget_to_viewport(
@@ -263,35 +183,15 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and widget instance information
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # C++ expects the target widget blueprint as "blueprint_name".
-            params = {
-                "blueprint_name": widget_name,
-                "widget_name": widget_name,
-                "z_order": z_order
-            }
-            
-            logger.info(f"Adding widget to viewport with params: {params}")
-            response = unreal.send_command("add_widget_to_viewport", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Add widget to viewport response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding widget to viewport: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # C++ expects the target widget blueprint as "blueprint_name".
+        params = {
+            "blueprint_name": widget_name,
+            "widget_name": widget_name,
+            "z_order": z_order
+        }
+        logger.info(f"Adding widget to viewport with params: {params}")
+        return call_unreal("add_widget_to_viewport", params)
 
     @mcp.tool()
     def set_text_block_binding(
@@ -313,38 +213,18 @@ def register_umg_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and binding information
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            # C++ expects the widget blueprint as "blueprint_name", the text block as
-            # "widget_name", and the binding variable as "binding_name".
-            params = {
-                "blueprint_name": widget_name,
-                "widget_name": text_block_name,
-                "text_block_name": text_block_name,
-                "binding_name": binding_property,
-                "binding_property": binding_property,
-                "binding_type": binding_type
-            }
-            
-            logger.info(f"Setting text block binding with params: {params}")
-            response = unreal.send_command("set_text_block_binding", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Set text block binding response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error setting text block binding: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # C++ expects the widget blueprint as "blueprint_name", the text block as
+        # "widget_name", and the binding variable as "binding_name".
+        params = {
+            "blueprint_name": widget_name,
+            "widget_name": text_block_name,
+            "text_block_name": text_block_name,
+            "binding_name": binding_property,
+            "binding_property": binding_property,
+            "binding_type": binding_type
+        }
+        logger.info(f"Setting text block binding with params: {params}")
+        return call_unreal("set_text_block_binding", params)
 
     logger.info("UMG tools registered successfully") 

@@ -167,9 +167,22 @@ def control_plane_secret(server_py: pathlib.Path) -> str:
 
 SNAPSHOT_REL = ("Saved", "MCP", "bridge_state.json")
 
+# The bridge rewrites the snapshot four times a second, so a file older than this belongs to
+# an editor that is no longer running and must not be reported as current state.
+SNAPSHOT_MAX_AGE_SECONDS = 30.0
+
 
 def snapshot_path(uproject: pathlib.Path) -> pathlib.Path:
     return uproject.parent.joinpath(*SNAPSHOT_REL)
+
+
+def snapshot_is_fresh(path: pathlib.Path, now: float,
+                     max_age: float = SNAPSHOT_MAX_AGE_SECONDS) -> bool:
+    """True when the snapshot was written recently (missing or unreadable counts as stale)."""
+    try:
+        return (now - path.stat().st_mtime) <= max_age
+    except OSError:
+        return False
 
 
 def parse_snapshot(text: str) -> dict | None:
@@ -282,8 +295,12 @@ def kill_process(pid: int) -> bool:
 
 
 def launch_editor(editor: pathlib.Path, uproject: pathlib.Path) -> subprocess.Popen:
-    # Detached so the editor outlives this script (and the agent turn).
-    creation = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    # Detached so the editor outlives this script, the agent turn, AND this console. Without
+    # DETACHED_PROCESS a console control event (the terminal that launched us going away)
+    # kills a healthy editor: observed as "Engine exit requested (reason: ConsoleCtrl
+    # RequestExit)" a minute after the launching command ended.
+    detached = 0x00000008  # DETACHED_PROCESS
+    creation = (subprocess.CREATE_NEW_PROCESS_GROUP | detached) if os.name == "nt" else 0
     return subprocess.Popen(
         [str(editor), str(uproject), "-log", "-NoSplash", "-Unattended"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -304,8 +321,17 @@ def cmd_status(args) -> int:
     bridge = probe_bridge()
 
     snap_file = snapshot_path(args.uproject)
-    snapshot = parse_snapshot(snap_file.read_text(encoding="utf-8", errors="replace")) \
-        if snap_file.is_file() else None
+    snapshot = None
+    snapshot_text = describe_snapshot(None)
+    if snap_file.is_file():
+        if snapshot_is_fresh(snap_file, time.time()):
+            snapshot = parse_snapshot(snap_file.read_text(encoding="utf-8", errors="replace"))
+        else:
+            # A leftover file from a dead editor must not be shown as current state.
+            age = time.time() - snap_file.stat().st_mtime
+            snapshot_text = f"stale snapshot ignored (last written {age:.0f}s ago)"
+    if snapshot:
+        snapshot_text = describe_snapshot(snapshot)
 
     editors = [p for p in classified if p["kind"] == "editor"]
     helpers = [p for p in classified if p["kind"] == "helper"]
@@ -322,9 +348,9 @@ def cmd_status(args) -> int:
         }, indent=2))
         return 0
 
-    reason = "" if bridge == "ok" else f"  [{describe_snapshot(snapshot)}]"
+    reason = "" if bridge == "ok" else f"  [{snapshot_text}]"
     print(f"bridge: {bridge}  ({HOST}:{PORT}){reason}")
-    print(f"bridge state: {describe_snapshot(snapshot)}")
+    print(f"bridge state: {snapshot_text}")
     if not editors:
         print("editors: none")
     for e in editors:

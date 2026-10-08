@@ -59,13 +59,8 @@ def _iter_tool_defs(module_path: pathlib.Path):
     of (name, annotation_text_or_None).
     """
     for _module, child in tool_catalog.iter_decorated_functions(module_path):
-        calls = [n for n in ast.walk(child)
-                 if isinstance(n, ast.Call)
-                 and isinstance(n.func, ast.Attribute)
-                 and n.func.attr == "send_command"]
-        command = None
-        if calls and calls[0].args and isinstance(calls[0].args[0], ast.Constant):
-            command = calls[0].args[0].value
+        # Command extraction is shared with the catalog (one parser, both call forms).
+        command = tool_catalog.command_of(child) or None
         args = list(child.args.posonlyargs) + list(child.args.args) + list(child.args.kwonlyargs)
         params = []
         for a in args:

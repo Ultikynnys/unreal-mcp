@@ -7,6 +7,7 @@ This module provides tools for manipulating Blueprint graph nodes and connection
 import logging
 from typing import Dict, List, Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
+from tools.mcp_client import call_unreal
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -37,40 +38,19 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing the node ID and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            # Handle default value within the method body
-            if node_position is None:
-                node_position = [0, 0]
-            
-            params = {
-                "blueprint_name": blueprint_name,
-                "event_name": event_name,
-                "node_position": node_position
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding event node '{event_name}' to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_event_node", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Event node creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding event node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # Handle default value within the method body
+        if node_position is None:
+            node_position = [0, 0]
+        params = {
+            "blueprint_name": blueprint_name,
+            "event_name": event_name,
+            "node_position": node_position
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Adding event node '{event_name}' to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_event_node", params)
     
     @mcp.tool()
     def add_blueprint_input_action_node(
@@ -92,40 +72,19 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing the node ID and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            # Handle default value within the method body
-            if node_position is None:
-                node_position = [0, 0]
-            
-            params = {
-                "blueprint_name": blueprint_name,
-                "action_name": action_name,
-                "node_position": node_position
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding input action node for '{action_name}' to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_input_action_node", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Input action node creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding input action node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # Handle default value within the method body
+        if node_position is None:
+            node_position = [0, 0]
+        params = {
+            "blueprint_name": blueprint_name,
+            "action_name": action_name,
+            "node_position": node_position
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Adding input action node for '{action_name}' to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_input_action_node", params)
     
     @mcp.tool()
     def add_blueprint_function_node(
@@ -151,44 +110,23 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing the node ID and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            # Handle default values within the method body
-            if params is None:
-                params = {}
-            if node_position is None:
-                node_position = [0, 0]
-            
-            command_params = {
-                "blueprint_name": blueprint_name,
-                "target": target,
-                "function_name": function_name,
-                "params": params,
-                "node_position": node_position
-            }
-            if graph_name:
-                command_params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding function node '{function_name}' to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_function_node", command_params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Function node creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding function node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # Handle default values within the method body
+        if params is None:
+            params = {}
+        if node_position is None:
+            node_position = [0, 0]
+        command_params = {
+            "blueprint_name": blueprint_name,
+            "target": target,
+            "function_name": function_name,
+            "params": params,
+            "node_position": node_position
+        }
+        if graph_name:
+            command_params["graph_name"] = graph_name
+        logger.info(f"Adding function node '{function_name}' to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_function_node", command_params)
             
     @mcp.tool()
     def connect_blueprint_nodes(
@@ -219,39 +157,19 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response indicating success or failure
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "source_node_id": source_node_id,
-                "source_pin": source_pin,
-                "target_node_id": target_node_id,
-                "target_pin": target_pin,
-                "max_connection_length": max_connection_length
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Connecting nodes in blueprint '{blueprint_name}'")
-            response = unreal.send_command("connect_blueprint_nodes", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Node connection response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error connecting nodes: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "source_node_id": source_node_id,
+            "source_pin": source_pin,
+            "target_node_id": target_node_id,
+            "target_pin": target_pin,
+            "max_connection_length": max_connection_length
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Connecting nodes in blueprint '{blueprint_name}'")
+        return call_unreal("connect_blueprint_nodes", params)
     
     @mcp.tool()
     def add_blueprint_variable(
@@ -275,36 +193,16 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response indicating success or failure
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "variable_name": variable_name,
-                "variable_type": variable_type,
-                "is_exposed": is_exposed,
-                "container": container
-            }
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding variable '{variable_name}' to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_variable", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Variable creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding variable: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "variable_name": variable_name,
+            "variable_type": variable_type,
+            "is_exposed": is_exposed,
+            "container": container
+        }
+        logger.info(f"Adding variable '{variable_name}' to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_variable", params)
     
     @mcp.tool()
     def add_blueprint_get_self_component_reference(
@@ -327,40 +225,19 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing the node ID and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            # Handle None case explicitly in the function
-            if node_position is None:
-                node_position = [0, 0]
-            
-            params = {
-                "blueprint_name": blueprint_name,
-                "component_name": component_name,
-                "node_position": node_position
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding self component reference node for '{component_name}' to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_get_self_component_reference", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Self component reference node creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding self component reference node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # Handle None case explicitly in the function
+        if node_position is None:
+            node_position = [0, 0]
+        params = {
+            "blueprint_name": blueprint_name,
+            "component_name": component_name,
+            "node_position": node_position
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Adding self component reference node for '{component_name}' to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_get_self_component_reference", params)
     
     @mcp.tool()
     def add_blueprint_self_reference(
@@ -380,38 +257,17 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing the node ID and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-                
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_position": node_position
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Adding self reference node to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_self_reference", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Self reference node creation response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error adding self reference node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        if node_position is None:
+            node_position = [0, 0]
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_position": node_position
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Adding self reference node to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_self_reference", params)
     
     @mcp.tool()
     def find_blueprint_nodes(
@@ -433,38 +289,18 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Response containing array of found node IDs, detailed node/pin information, and success status
         """
-        from unreal_mcp_server import get_unreal_connection
         
-        try:
-            # C++ reads the event name from "event_name" (not "event_type").
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_type": node_type,
-                "event_type": event_type,
-                "event_name": event_type
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-            
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            
-            logger.info(f"Finding nodes in blueprint '{blueprint_name}'")
-            response = unreal.send_command("find_blueprint_nodes", params)
-            
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            logger.info(f"Node find response: {response}")
-            return response
-            
-        except Exception as e:
-            error_msg = f"Error finding nodes: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        # C++ reads the event name from "event_name" (not "event_type").
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_type": node_type,
+            "event_type": event_type,
+            "event_name": event_type
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Finding nodes in blueprint '{blueprint_name}'")
+        return call_unreal("find_blueprint_nodes", params)
     
     @mcp.tool()
     def add_blueprint_node(
@@ -508,36 +344,21 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns the node_id and its pins (name / direction / category) so they can be wired
         with connect_blueprint_nodes.
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            if params is None:
-                params = {}
-            if node_position is None:
-                node_position = [0, 0]
-
-            command_params = {
-                "blueprint_name": blueprint_name,
-                "node_type": node_type,
-                "params": params,
-                "node_position": node_position
-            }
-            if graph_name:
-                command_params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Adding '{node_type}' node to blueprint '{blueprint_name}'")
-            response = unreal.send_command("add_blueprint_node", command_params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error adding blueprint node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        if params is None:
+            params = {}
+        if node_position is None:
+            node_position = [0, 0]
+        command_params = {
+            "blueprint_name": blueprint_name,
+            "node_type": node_type,
+            "params": params,
+            "node_position": node_position
+        }
+        if graph_name:
+            command_params["graph_name"] = graph_name
+        logger.info(f"Adding '{node_type}' node to blueprint '{blueprint_name}'")
+        return call_unreal("add_blueprint_node", command_params)
 
     @mcp.tool()
     def set_blueprint_node_pin_default(
@@ -564,31 +385,17 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict with success status and the applied value
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_id": node_id,
-                "pin_name": pin_name,
-                "value": value
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Setting pin '{pin_name}' default on node '{node_id}' in '{blueprint_name}'")
-            response = unreal.send_command("set_blueprint_node_pin_default", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error setting pin default: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_id": node_id,
+            "pin_name": pin_name,
+            "value": value
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Setting pin '{pin_name}' default on node '{node_id}' in '{blueprint_name}'")
+        return call_unreal("set_blueprint_node_pin_default", params)
 
     @mcp.tool()
     def delete_blueprint_node(
@@ -607,29 +414,15 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict containing success status and deleted node information
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_id": node_id
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Deleting node '{node_id}' from blueprint '{blueprint_name}'")
-            response = unreal.send_command("delete_blueprint_node", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error deleting blueprint node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_id": node_id
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Deleting node '{node_id}' from blueprint '{blueprint_name}'")
+        return call_unreal("delete_blueprint_node", params)
 
     @mcp.tool()
     def clear_blueprint_graph(
@@ -652,28 +445,14 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict containing success status, deleted_nodes_count, and entry_node_id
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "graph_name": graph_name,
-                "keep_entry_nodes": keep_entry_nodes
-            }
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Clearing graph '{graph_name}' in blueprint '{blueprint_name}'")
-            response = unreal.send_command("clear_blueprint_graph", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error clearing blueprint graph: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "graph_name": graph_name,
+            "keep_entry_nodes": keep_entry_nodes
+        }
+        logger.info(f"Clearing graph '{graph_name}' in blueprint '{blueprint_name}'")
+        return call_unreal("clear_blueprint_graph", params)
 
     @mcp.tool()
     def disconnect_blueprint_pin(
@@ -702,35 +481,21 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict containing success status
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_id": node_id
-            }
-            if pin_name:
-                params["pin_name"] = pin_name
-            if target_node_id:
-                params["target_node_id"] = target_node_id
-            if target_pin_name:
-                params["target_pin_name"] = target_pin_name
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Disconnecting pin on node '{node_id}' in blueprint '{blueprint_name}'")
-            response = unreal.send_command("disconnect_blueprint_pin", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error disconnecting blueprint pin: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_id": node_id
+        }
+        if pin_name:
+            params["pin_name"] = pin_name
+        if target_node_id:
+            params["target_node_id"] = target_node_id
+        if target_pin_name:
+            params["target_pin_name"] = target_pin_name
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Disconnecting pin on node '{node_id}' in blueprint '{blueprint_name}'")
+        return call_unreal("disconnect_blueprint_pin", params)
 
     @mcp.tool()
     def get_blueprint_graphs(
@@ -748,26 +513,12 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict containing list of graphs with name, node_count, is_construction_script, is_event_graph
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name
-            }
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Getting graphs for blueprint '{blueprint_name}'")
-            response = unreal.send_command("get_blueprint_graphs", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error getting blueprint graphs: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name
+        }
+        logger.info(f"Getting graphs for blueprint '{blueprint_name}'")
+        return call_unreal("get_blueprint_graphs", params)
 
     @mcp.tool()
     def validate_blueprint_graph(
@@ -792,29 +543,15 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict with 'valid' (bool), 'issue_count', and 'issues' (list of broken rules)
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "max_connection_length": max_connection_length
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Validating graph(s) in blueprint '{blueprint_name}'")
-            response = unreal.send_command("validate_blueprint_graph", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error validating blueprint graph: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "max_connection_length": max_connection_length
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Validating graph(s) in blueprint '{blueprint_name}'")
+        return call_unreal("validate_blueprint_graph", params)
 
     @mcp.tool()
     def set_blueprint_node_position(
@@ -845,32 +582,18 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict with node_id, old_position, position, and forced flag
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params = {
-                "blueprint_name": blueprint_name,
-                "node_id": node_id,
-                "position": position,
-                "max_connection_length": max_connection_length,
-                "force": force
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Moving node '{node_id}' in blueprint '{blueprint_name}' to {position}")
-            response = unreal.send_command("set_blueprint_node_position", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error moving node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params = {
+            "blueprint_name": blueprint_name,
+            "node_id": node_id,
+            "position": position,
+            "max_connection_length": max_connection_length,
+            "force": force
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Moving node '{node_id}' in blueprint '{blueprint_name}' to {position}")
+        return call_unreal("set_blueprint_node_position", params)
 
     @mcp.tool()
     def add_blueprint_reroute_node(
@@ -893,31 +616,17 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             Dict with node_id, node_type, and the node's pins
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            if position is None:
-                position = [0, 0]
-            params = {
-                "blueprint_name": blueprint_name,
-                "position": position
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Adding reroute node to blueprint '{blueprint_name}' at {position}")
-            response = unreal.send_command("add_blueprint_reroute_node", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error adding reroute node: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        if position is None:
+            position = [0, 0]
+        params = {
+            "blueprint_name": blueprint_name,
+            "position": position
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Adding reroute node to blueprint '{blueprint_name}' at {position}")
+        return call_unreal("add_blueprint_reroute_node", params)
 
     @mcp.tool()
     def apply_blueprint_plan(
@@ -964,34 +673,20 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             {job_id, total, state}
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params: Dict[str, Any] = {
-                "blueprint_name": blueprint_name,
-                "graph_name": graph_name,
-                "clear": clear,
-                "auto_layout": auto_layout,
-                "async": async_,
-            }
-            if plan_path:
-                params["plan_path"] = plan_path
-            elif plan is not None:
-                params["plan"] = plan
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Applying blueprint plan to '{blueprint_name}.{graph_name}'")
-            response = unreal.send_command("apply_blueprint_plan", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error applying blueprint plan: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params: Dict[str, Any] = {
+            "blueprint_name": blueprint_name,
+            "graph_name": graph_name,
+            "clear": clear,
+            "auto_layout": auto_layout,
+            "async": async_,
+        }
+        if plan_path:
+            params["plan_path"] = plan_path
+        elif plan is not None:
+            params["plan"] = plan
+        logger.info(f"Applying blueprint plan to '{blueprint_name}.{graph_name}'")
+        return call_unreal("apply_blueprint_plan", params)
 
     @mcp.tool()
     def get_plan_status(
@@ -1004,21 +699,8 @@ def register_blueprint_node_tools(mcp: FastMCP):
             {state: queued|running|done|failed, phase, applied, total,
              failure_count, failures:[{op, error}], refs:{ref: guid}}
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            response = unreal.send_command("get_plan_status", {"job_id": job_id})
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error getting plan status: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        return call_unreal("get_plan_status", {"job_id": job_id})
 
     @mcp.tool()
     def get_blueprint_node_bounds(
@@ -1042,27 +724,13 @@ def register_blueprint_node_tools(mcp: FastMCP):
              suggested_placement:[x,y], nodes:[{node_id, node_name, node_title,
              pos_x, pos_y, width, height, structural}]?}
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params: Dict[str, Any] = {"blueprint_name": blueprint_name}
-            if graph_name:
-                params["graph_name"] = graph_name
-            if include_nodes:
-                params["include_nodes"] = True
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            response = unreal.send_command("get_blueprint_node_bounds", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error getting blueprint node bounds: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params: Dict[str, Any] = {"blueprint_name": blueprint_name}
+        if graph_name:
+            params["graph_name"] = graph_name
+        if include_nodes:
+            params["include_nodes"] = True
+        return call_unreal("get_blueprint_node_bounds", params)
 
     @mcp.tool()
     def auto_layout_blueprint_graph(
@@ -1093,32 +761,18 @@ def register_blueprint_node_tools(mcp: FastMCP):
         Returns:
             {success, node_count, moved_nodes, knots_inserted, edges_rewired, routing_rebuilt}
         """
-        from unreal_mcp_server import get_unreal_connection
 
-        try:
-            params: Dict[str, Any] = {
-                "blueprint_name": blueprint_name,
-                "col_gap": col_gap,
-                "row_gap": row_gap,
-                "rebuild_routing": rebuild_routing,
-                "origin_x": origin_x,
-                "origin_y": origin_y,
-            }
-            if graph_name:
-                params["graph_name"] = graph_name
-
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-
-            logger.info(f"Auto-laying out '{blueprint_name}.{graph_name}'")
-            response = unreal.send_command("auto_layout_blueprint_graph", params)
-            return response or {"success": False, "message": "No response from Unreal Engine"}
-
-        except Exception as e:
-            error_msg = f"Error auto-laying out graph: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg}
+        params: Dict[str, Any] = {
+            "blueprint_name": blueprint_name,
+            "col_gap": col_gap,
+            "row_gap": row_gap,
+            "rebuild_routing": rebuild_routing,
+            "origin_x": origin_x,
+            "origin_y": origin_y,
+        }
+        if graph_name:
+            params["graph_name"] = graph_name
+        logger.info(f"Auto-laying out '{blueprint_name}.{graph_name}'")
+        return call_unreal("auto_layout_blueprint_graph", params)
 
     logger.info("Blueprint node tools registered successfully")

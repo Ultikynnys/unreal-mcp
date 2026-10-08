@@ -59,14 +59,19 @@ def iter_decorated_functions(tools_dir: pathlib.Path):
                 yield module_path, node
 
 
-def _command_of(node: ast.FunctionDef) -> str:
-    """The send_command argument the tool uses, if any."""
+# The calls that carry a command name as their first argument. `send_command` is the
+# connection method; `call_unreal` is the shared helper that wraps it (Python/tools/
+# mcp_client.py). Both keep the name a literal so source parsing can find it.
+COMMAND_CALLS = ("send_command", "call_unreal")
+
+
+def command_of(node: ast.AST) -> str:
+    """The command name a tool function sends, taken from its call site."""
     for child in ast.walk(node):
-        if (isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Attribute)
-                and child.func.attr == "send_command"
-                and child.args
-                and isinstance(child.args[0], ast.Constant)):
+        if not isinstance(child, ast.Call) or not child.args:
+            continue
+        name = getattr(child.func, "attr", None) or getattr(child.func, "id", None)
+        if name in COMMAND_CALLS and isinstance(child.args[0], ast.Constant):
             return str(child.args[0].value)
     return ""
 
@@ -94,7 +99,7 @@ def discover_tools(tools_dir: pathlib.Path) -> list[ToolInfo]:
             name=node.name,
             summary=_summary_of(node),
             params=_params_of(node),
-            command=_command_of(node),
+            command=command_of(node),
             category=category,
         ))
     tools.sort(key=lambda t: t.name)

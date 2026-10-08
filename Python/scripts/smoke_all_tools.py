@@ -18,10 +18,27 @@ project is left exactly as it was found.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import socket
 import sys
 import time
 from pathlib import Path
+
+# Bound every call, and refuse to start against a dead bridge. Without this the run has no
+# timeout of its own: the server's read timeout is 10 minutes by default, so a bridge that
+# accepts a connection and never answers stalls the whole run, and a dead editor makes it
+# walk all 78 tools for nothing.
+_parser = argparse.ArgumentParser(description="Smoke test every registered MCP tool.")
+_parser.add_argument("--timeout", type=int, default=30,
+                     help="per-call socket timeout in seconds (default %(default)s)")
+_args = _parser.parse_args()
+
+# unreal_mcp_server reads its timeouts from the environment at import time, so set them
+# before the import below.
+os.environ["UNREAL_MCP_READ_TIMEOUT"] = str(_args.timeout)
+os.environ["UNREAL_MCP_TIMEOUT"] = str(_args.timeout)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import unreal_mcp_server  # noqa: E402
@@ -73,7 +90,6 @@ PARAMS = {
     "spawn_blueprint_actor": {"blueprint_name": SCRATCH_ABSENT, "actor_name": SCRATCH},
     "find_actors_by_name": {"pattern": SCRATCH_ABSENT},
     "get_actors_in_level": {},
-    "focus_viewport": {},
     "capture_viewport_screenshot": {},
     "capture_pie_screenshot": {},
     "query_assets": {"path": "/Game", "limit": 1},
@@ -170,6 +186,15 @@ print("smoke cleanup: dirs=%d actors=%d" % (removed_dirs, removed_actors))
 '''
 
 
+def bridge_up(timeout: float = 3.0) -> bool:
+    """True when something is listening on the bridge port (cheap; sends no command)."""
+    try:
+        with socket.create_connection(("127.0.0.1", 55557), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def cleanup() -> None:
     """Best-effort removal of anything the smoke run created."""
     try:
@@ -181,28 +206,33 @@ def cleanup() -> None:
 
 
 def main() -> int:
+    if not bridge_up():
+        print("FAIL: no editor bridge on 127.0.0.1:55557 - nothing to test. Start one with "
+              "`uv run --project Python python Python/scripts/editor_process.py restart`.")
+        return 1
     names = sorted(registry.tools)
     unreached: list[tuple[str, str]] = []
-    print(f"smoke testing {len(names)} tool(s) against the live editor\n")
+    print(f"smoke testing {len(names)} tool(s) against the live editor "
+          f"(per-call timeout {_args.timeout}s)\n", flush=True)
     for name in names:
         func = registry.tools[name]
         if name in SKIP:
-            print(f"  skip  {name}: writes project config; covered by static parity")
+            print(f"  skip  {name}: writes project config; covered by static parity", flush=True)
             continue
         params = PARAMS.get(name, {})
         try:
             response = func(None, **params)
         except Exception as error:  # transport / param shaping failure
             unreached.append((name, f"exception: {error}"))
-            print(f"  EXC   {name}: {error}")
+            print(f"  EXC   {name}: {error}", flush=True)
             continue
         text = json.dumps(response, default=str)
         if any(marker in text for marker in UNKNOWN_MARKERS):
             unreached.append((name, text[:160]))
-            print(f"  UNREACHED {name}: {text[:120]}")
+            print(f"  UNREACHED {name}: {text[:120]}", flush=True)
             continue
         ok = response.get("success") if isinstance(response, dict) else None
-        print(f"  {'ok  ' if ok else 'warn'}  {name}: {text[:100]}")
+        print(f"  {'ok  ' if ok else 'warn'}  {name}: {text[:100]}", flush=True)
         time.sleep(0.05)
 
     cleanup()

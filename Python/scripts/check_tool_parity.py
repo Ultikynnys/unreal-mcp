@@ -36,8 +36,10 @@ PY_TOOLS_GLOB = "Python/tools/*.py"
 
 # ``CommandType == TEXT("...")`` / ``CommandName == TEXT("...")`` in the C++ dispatch.
 CPP_CMD_RE = re.compile(r'(?:CommandType|CommandName)\s*==\s*TEXT\("([a-z0-9_]+)"\)')
-# ``unreal.send_command("<name>"`` in the Python tool layer.
-PY_CMD_RE = re.compile(r'send_command\(\s*["\']([a-z0-9_]+)["\']')
+# ``unreal.send_command("<name>"`` or ``call_unreal("<name>"`` in the Python tool layer.
+# The shared helper (Python/tools/mcp_client.py) keeps the command name a literal, which is
+# what lets this checker and the tool catalog find it by parsing the source.
+PY_CMD_RE = re.compile(r'(?:send_command|call_unreal)\(\s*["\']([a-z0-9_]+)["\']')
 
 
 def collect_cpp_commands(root: pathlib.Path) -> tuple[set[str], list[str]]:
@@ -158,7 +160,7 @@ CPP_PARAM_RE = re.compile(
     r'|(?:TryGet|Get|Has|Find)Field\(\s*TEXT\("([a-z0-9_]+)"\)'
     r'|Get(?:Vector|Rotator|Vector2D|IntArray|FloatArray)FromJson\([^,]*,\s*TEXT\("([a-z0-9_]+)"\)'
 )
-PY_SEND_RE = re.compile(r'send_command\(\s*["\']([a-z0-9_]+)["\']\s*,\s*')
+PY_SEND_RE = re.compile(r'(?:send_command|call_unreal)\(\s*["\']([a-z0-9_]+)["\']\s*,\s*')
 
 # command -> parameter names the Python tool layer advertises but the C++ handler
 # currently ignores. These are a KNOWN-DRIFT BASELINE, not a claim they are safe: each
