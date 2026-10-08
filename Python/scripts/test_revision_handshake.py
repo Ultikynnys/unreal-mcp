@@ -9,7 +9,8 @@ This test locks the pieces that make that work:
 
   1. the revision reaches the plugin from the build file, not a hand-maintained constant,
   2. the bridge stamps `revision` (and `built_dirty`) onto every reply,
-  3. the server derives its own revision from git,
+  3. the server derives its own revision from the checkout, and falls back to
+     UNREAL_MCP_REVISION only when the checkout cannot answer,
   4. the check fails closed for a different revision, a missing one and "unknown", and it
      refuses BEFORE the command reaches the editor.
 
@@ -87,9 +88,27 @@ class ServerRevisionTests(unittest.TestCase):
         self.assertRegex(server.repo_revision(), r"^[0-9a-f]{40}$")
         self.assertEqual(server.repo_revision(), head_revision())
 
-    def test_env_override_wins(self):
+    def test_the_checkout_outranks_a_stale_override(self):
+        """A stale injected revision must not outrank the checkout.
+
+        Live failure this locks: an injected fa26928 refused every call while the checkout, the
+        ref and the plugin were all a1fae27, and no file on disk held fa26928.
+        """
         with mock.patch.dict(os.environ, {"UNREAL_MCP_REVISION": "cafebabe"}):
-            self.assertEqual(server.repo_revision(), "cafebabe")
+            self.assertEqual(server.repo_revision(), head_revision())
+
+    def test_the_override_is_used_only_when_the_checkout_cannot_answer(self):
+        """A packaged install has no checkout, so the shipped revision has to come from the env."""
+        import tempfile
+
+        original = server.REPO_ROOT
+        with tempfile.TemporaryDirectory() as empty:
+            server.REPO_ROOT = pathlib.Path(empty)
+            try:
+                with mock.patch.dict(os.environ, {"UNREAL_MCP_REVISION": "cafebabe"}):
+                    self.assertEqual(server.repo_revision(), "cafebabe")
+            finally:
+                server.REPO_ROOT = original
 
     def test_revision_does_not_need_git_on_the_path(self):
         """The host spawns the server with a PATH that may have no git: .git is read directly.

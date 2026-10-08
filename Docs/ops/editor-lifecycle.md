@@ -45,7 +45,7 @@ server compares it against the commit it **runs** from, so drift cannot be forgo
 
 | Side | Where |
 |---|---|
-| Python server | `.git` read live on every handshake (`UNREAL_MCP_REVISION` overrides it) |
+| Python server | `.git` read live on every handshake; `UNREAL_MCP_REVISION` only when the checkout cannot answer, and a value that disagrees with `.git` is ignored and logged |
 | Plugin build | `MCP_REVISION` define from `UnrealMCP.Build.cs`, baked in at build time |
 | Loaded plugin | stamped as `revision` (plus `built_dirty`) on every reply |
 
@@ -84,7 +84,9 @@ Touch `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs` (an
 whitespace) before rebuilding, or do a clean build; only then does the makefile invalidate and the
 new revision get baked in. And a plugin
 **copied into another project** records that project's HEAD, which cannot match this repo: build
-the copy with `MCP_REVISION=<this repo's HEAD>`, or set `UNREAL_MCP_REVISION` on the server. A
+the copy with `MCP_REVISION=<this repo's HEAD>`. Pinning at build time is the tool for that: the
+server reads its own `.git` and ignores an override that disagrees with it, so a stale injected
+value cannot wedge the handshake again. A
 plugin built from a dirty tree is reported (`built_dirty`) and logged as a warning rather than
 refused, because a commit cannot identify a dirty build and refusing would block the normal
 edit-build-test loop.

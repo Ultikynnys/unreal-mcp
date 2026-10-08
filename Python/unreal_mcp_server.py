@@ -136,13 +136,26 @@ def _revision_from_git_dir(root: pathlib.Path) -> str:
 
 
 def repo_revision() -> str:
-    """The commit this server runs from. UNREAL_MCP_REVISION wins, for a packaged or copied tree."""
-    override = os.getenv("UNREAL_MCP_REVISION")
-    if override:
-        return override.strip()
+    """The commit this server runs from: the checkout answers, the env is only a fallback.
+
+    The live read wins. UNREAL_MCP_REVISION is consulted only when the checkout cannot answer (a
+    packaged install, a copied tree), because an override that outranks reality wedges the
+    handshake with a value no file on disk holds: a stale injected fa26928 refused every call while
+    the checkout, the ref and the plugin were all a1fae27, and nothing on disk explained it. When
+    both exist and disagree the disagreement is logged, so a value's source is never a mystery.
+    """
     from_git_dir = _revision_from_git_dir(REPO_ROOT)
+    override = (os.getenv("UNREAL_MCP_REVISION") or "").strip()
     if from_git_dir:
+        if override and override != from_git_dir:
+            logger.warning(
+                "Ignoring UNREAL_MCP_REVISION=%s: this checkout is %s and the checkout wins. "
+                "Pin the plugin at build time (MCP_REVISION) if the two are meant to differ.",
+                override, from_git_dir)
         return from_git_dir
+    if override:
+        logger.warning("No revision in .git; falling back to UNREAL_MCP_REVISION=%s", override)
+        return override
     try:
         result = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
