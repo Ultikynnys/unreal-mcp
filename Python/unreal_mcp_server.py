@@ -44,8 +44,7 @@ logger = logging.getLogger("UnrealMCP")
 #
 # Do NOT bypass this layer. Specifically, do NOT:
 #   * open a raw socket to 127.0.0.1:55557,
-#   * copy Python/editor/archive_mcp_client.py or Python/scripts/** into a
-#     private "cmd()" helper, or
+#   * copy the example scripts under Python/scripts/ into a private "cmd()" helper, or
 #   * re-implement a client "just to get around" a tool you dislike.
 #
 # The bridge is unauthenticated on loopback by design, so a hand-rolled client

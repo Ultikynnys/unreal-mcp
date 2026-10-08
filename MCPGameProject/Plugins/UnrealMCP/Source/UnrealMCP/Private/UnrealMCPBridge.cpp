@@ -81,7 +81,7 @@ namespace
 
     const TCHAR* GMCPControlPlaneInstructions =
         TEXT("UNAUTHORIZED: this endpoint answers only the sanctioned Unreal MCP control plane.\n")
-        TEXT("Do NOT open a raw socket to 127.0.0.1:55557, do NOT copy Python/editor/archive_mcp_client.py\n")
+        TEXT("Do NOT open a raw socket to 127.0.0.1:55557, do NOT copy the example scripts under Python/scripts/\n")
         TEXT("or Python/scripts/** into a private \"cmd()\" helper, and do NOT reimplement a client to route\n")
         TEXT("around one of the unreal_mcp_* tools. Drive the editor through those tools only.\n")
         TEXT("If they are not good enough (a missing command, wrong parameters, flaky responses), STOP and\n")
@@ -281,7 +281,6 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("set_actor_transform") ||
         CommandType == TEXT("set_actor_property") ||
         CommandType == TEXT("spawn_blueprint_actor") ||
-        CommandType == TEXT("focus_viewport") ||
         CommandType == TEXT("get_actor_details") ||
         CommandType == TEXT("get_capabilities") ||
         CommandType == TEXT("query_assets") ||

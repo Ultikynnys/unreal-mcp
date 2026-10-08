@@ -88,7 +88,6 @@ PARAMS = {
     "spawn_mesh_grid": {"mesh_path": "/Game/" + SCRATCH_ABSENT, "prefix": SCRATCH, "rows": 1, "cols": 1},
     "spawn_instanced_mesh": {"mesh_path": "/Game/" + SCRATCH_ABSENT, "name": SCRATCH, "instances": []},
     "spawn_blueprint_actor": {"blueprint_name": SCRATCH_ABSENT, "actor_name": SCRATCH},
-    "find_actors_by_name": {"pattern": SCRATCH_ABSENT},
     "get_actors_in_level": {},
     "capture_viewport_screenshot": {},
     "capture_pie_screenshot": {},

@@ -9,7 +9,9 @@ handler in the C++ plugin's command dispatch. The Python layer must never expose
 an MCP tool the plugin cannot serve.
 
 Extra C++-internal commands (e.g. ``ping``) with no Python caller are allowed and
-only reported for information.
+only reported for information. In the other direction the plugin must not advertise
+less than it serves: ``get_capabilities`` returning a subset of the command surface
+would tell an agent the plugin cannot do things it can.
 
 Exits non-zero (1) when one or more Python commands have no C++ handler, so CI fails
 on drift. Exits 0 when the two layers are in sync.
@@ -329,6 +331,13 @@ def main(argv: list[str] | None = None) -> int:
     inline = collect_bridge_commands(root) - routed
     unbacked = sorted(cmd for cmd in advertised if cmd not in dispatched and cmd not in inline)
 
+    # Completeness, the other direction: a command the plugin serves but never advertises is
+    # invisible to an agent that asks get_capabilities what this plugin can do - the list
+    # used to omit every blueprint, node, UMG and project command. Only enforced when the
+    # plugin publishes a list at all, so a tree without one is reported rather than failed.
+    served = set(dispatched) | inline
+    unadvertised = sorted(cmd for cmd in served if cmd not in advertised) if advertised else []
+
     # Parameter-level drift (best effort): a command present on both sides whose
     # Python-sent parameters are not all read by the matching C++ handler.
     cpp_handlers = collect_command_handlers(root)
@@ -387,6 +396,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {cmd}: {', '.join(drift[cmd])}")
         print()
 
+    if unadvertised:
+        print(f"FAIL: {len(unadvertised)} served command(s) are missing from the "
+              f"get_capabilities list, so the plugin under-reports what it can do:")
+        for cmd in unadvertised:
+            print(f"  - {cmd}")
+        print()
+    elif not advertised and not args.quiet:
+        print("INFO: no SupportedCommands list found; capability completeness not checked")
+        print()
+
     known_drift = {cmd: sorted(params) for cmd, params in PARAM_ALLOWLIST.items() if params}
     if known_drift and not args.quiet:
         print(f"INFO: {sum(len(v) for v in known_drift.values())} parameter(s) are advertised "
@@ -412,8 +431,14 @@ def main(argv: list[str] | None = None) -> int:
               "and the C++ handlers.")
         return 1
 
+    if unadvertised:
+        print("Parity check FAILED: get_capabilities omits commands the plugin serves, "
+              "so the reported capability list is incomplete.")
+        return 1
+
     print("Parity check PASSED: every Python command is handled by the C++ plugin, "
-          "every routed command is dispatched, and no sent parameter is unread.")
+          "every routed command is dispatched, every served command is advertised, "
+          "and no sent parameter is unread.")
     return 0
 
 

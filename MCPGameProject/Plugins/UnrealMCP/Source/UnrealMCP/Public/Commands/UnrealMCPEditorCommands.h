@@ -37,9 +37,6 @@ private:
     // Blueprint actor spawning
     TSharedPtr<FJsonObject> HandleSpawnBlueprintActor(const TSharedPtr<FJsonObject>& Params);
 
-    // Editor viewport commands
-    TSharedPtr<FJsonObject> HandleFocusViewport(const TSharedPtr<FJsonObject>& Params);
-
     // Asset / capability inspection
     TSharedPtr<FJsonObject> HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleQueryAssets(const TSharedPtr<FJsonObject>& Params);

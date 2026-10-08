@@ -462,11 +462,6 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleSpawnBlueprintActor(Params);
     }
-    // Editor viewport commands
-    else if (CommandType == TEXT("focus_viewport"))
-    {
-        return HandleFocusViewport(Params);
-    }
     
     else if (CommandType == TEXT("get_actor_details")) { return HandleGetActorDetails(Params); }
     else if (CommandType == TEXT("get_capabilities")) { return HandleGetCapabilities(Params); }
@@ -561,7 +556,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("get_actor_details"), TEXT("set_actor_property"),
         TEXT("spawn_blueprint_actor"), TEXT("spawn_mesh_actor"), TEXT("spawn_light_actor"),
         TEXT("spawn_mesh_grid"), TEXT("spawn_instanced_mesh"), TEXT("set_actor_material"),
-        TEXT("set_actor_folder"), TEXT("delete_actors_by_prefix"), TEXT("focus_viewport"),
+        TEXT("set_actor_folder"), TEXT("delete_actors_by_prefix"),
         TEXT("capture_viewport_screenshot"), TEXT("capture_pie_screenshot"), TEXT("set_viewport_camera"),
         TEXT("create_level"), TEXT("save_level"), TEXT("load_level"), TEXT("delete_level"),
         TEXT("query_assets"), TEXT("get_asset_details"), TEXT("get_capabilities"),
@@ -578,6 +573,29 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetCapabilities(const TS
         TEXT("set_blueprint_node_pin_default"),
         TEXT("get_blueprint_node_bounds"),
         TEXT("auto_layout_blueprint_graph"),
+        // Blueprint asset commands (dispatched by FUnrealMCPBlueprintCommands). A capability
+        // list that omits these tells an agent the plugin cannot do blueprints at all, so
+        // check_tool_parity.py now fails when a served command is not advertised here.
+        TEXT("create_blueprint"), TEXT("add_component_to_blueprint"),
+        TEXT("set_component_property"), TEXT("set_physics_properties"),
+        TEXT("compile_blueprint"), TEXT("set_blueprint_property"),
+        TEXT("set_static_mesh_properties"),
+        // Blueprint graph node commands (FUnrealMCPBlueprintNodeCommands)
+        TEXT("add_blueprint_event_node"), TEXT("add_blueprint_input_action_node"),
+        TEXT("add_blueprint_function_node"), TEXT("add_blueprint_variable"),
+        TEXT("add_blueprint_node"), TEXT("add_blueprint_reroute_node"),
+        TEXT("add_blueprint_self_reference"),
+        TEXT("add_blueprint_get_self_component_reference"),
+        TEXT("connect_blueprint_nodes"), TEXT("find_blueprint_nodes"),
+        TEXT("set_blueprint_node_position"), TEXT("validate_blueprint_graph"),
+        // UMG widget commands (FUnrealMCPUMGCommands)
+        TEXT("create_umg_widget_blueprint"), TEXT("add_text_block_to_widget"),
+        TEXT("add_button_to_widget"), TEXT("bind_widget_event"),
+        TEXT("add_widget_to_viewport"), TEXT("set_text_block_binding"),
+        // Project settings (FUnrealMCPProjectCommands)
+        TEXT("create_input_mapping"),
+        // Answered inline by the bridge, so there is no handler class for them
+        TEXT("ping"),
         TEXT("recover_editor")
     };
     TArray<TSharedPtr<FJsonValue>> CommandArray;
@@ -3165,82 +3183,6 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn blueprint actor"));
-}
-
-TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSharedPtr<FJsonObject>& Params)
-{
-    // Get target actor name if provided
-    FString TargetActorName;
-    bool HasTargetActor = Params->TryGetStringField(TEXT("target"), TargetActorName);
-
-    // Get location if provided
-    FVector Location(0.0f, 0.0f, 0.0f);
-    bool HasLocation = false;
-    if (Params->HasField(TEXT("location")))
-    {
-        Location = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location"));
-        HasLocation = true;
-    }
-
-    // Get distance
-    float Distance = 1000.0f;
-    if (Params->HasField(TEXT("distance")))
-    {
-        Distance = Params->GetNumberField(TEXT("distance"));
-    }
-
-    // Get orientation if provided
-    FRotator Orientation(0.0f, 0.0f, 0.0f);
-    bool HasOrientation = false;
-    if (Params->HasField(TEXT("orientation")))
-    {
-        Orientation = FUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("orientation"));
-        HasOrientation = true;
-    }
-
-    // Get the active viewport
-    FLevelEditorViewportClient* ViewportClient = (FLevelEditorViewportClient*)GEditor->GetActiveViewport()->GetClient();
-    if (!ViewportClient)
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get active viewport"));
-    }
-
-    // If we have a target actor, focus on it
-    if (HasTargetActor)
-    {
-        // Find the actor
-        AActor* TargetActor = FUnrealMCPCommonUtils::ResolveActor(TargetActorName);
-
-        if (!TargetActor)
-        {
-            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *TargetActorName));
-        }
-
-        // Focus on the actor
-        ViewportClient->SetViewLocation(TargetActor->GetActorLocation() - FVector(Distance, 0.0f, 0.0f));
-    }
-    // Otherwise use the provided location
-    else if (HasLocation)
-    {
-        ViewportClient->SetViewLocation(Location - FVector(Distance, 0.0f, 0.0f));
-    }
-    else
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Either 'target' or 'location' must be provided"));
-    }
-
-    // Set orientation if provided
-    if (HasOrientation)
-    {
-        ViewportClient->SetViewRotation(Orientation);
-    }
-
-    // Force viewport to redraw
-    ViewportClient->Invalidate();
-
-    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-    ResultObj->SetBoolField(TEXT("success"), true);
-    return ResultObj;
 }
 
 // Resolve an object path ("/Game/A/Foo", "/Game/A/Foo.Foo", possibly a redirector) to the

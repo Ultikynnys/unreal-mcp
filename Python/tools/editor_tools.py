@@ -49,6 +49,7 @@ def register_editor_tools(mcp: FastMCP):
             type: The type of actor to create (e.g. StaticMeshActor, PointLight)
             location: The [x, y, z] world location to spawn at
             rotation: The [pitch, yaw, roll] rotation in degrees
+            allow_duplicate: Permit a duplicate base name; a free suffixed name is derived
             
         Returns:
             Dict containing the created actor's properties
@@ -117,8 +118,6 @@ def register_editor_tools(mcp: FastMCP):
                 "property_name": property_name,
                 "property_value": property_value
             })
-
-    # @mcp.tool() commented out because it's buggy
 
     @mcp.tool()
     def spawn_blueprint_actor(

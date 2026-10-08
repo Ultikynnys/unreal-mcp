@@ -86,6 +86,64 @@ class ReferenceTests(unittest.TestCase):
         self.assertLess(len(self.reference), MAX_REFERENCE_CHARS)
 
 
+class HygieneTests(unittest.TestCase):
+    """Everything an agent may read must be true: no ghost fixtures, no phantom parameters,
+    and no instruction naming a file that does not exist.
+
+    Each of these catches a bug that was live in this repo:
+      - smoke_all_tools.py carried a parameter map entry for find_actors_by_name, a tool that
+        no longer existed;
+      - spawn_actor's Args block omitted allow_duplicate, so the option was invisible;
+      - the control-plane banner (and the C++ refusal text) told the agent not to copy
+        Python/editor/archive_mcp_client.py, which had already been deleted.
+    """
+
+    @staticmethod
+    def _args_entries(docstring: str) -> set[str]:
+        """Parameter names documented in the Args: section (Returns: fields are not params)."""
+        if "Args:" not in docstring:
+            return set()
+        section = docstring.split("Args:", 1)[1]
+        for stop in ("Returns:", "Note:", "Example:", "Raises:"):
+            section = section.split(stop, 1)[0]
+        names: set[str] = set()
+        for match in re.finditer(r"^\s+([a-z_][a-z0-9_/]*)\s*:", section, re.MULTILINE):
+            names |= set(match.group(1).split("/"))
+        return names - {"ctx"}  # the MCP context is internal, not a tool parameter
+
+    def test_smoke_parameters_reference_only_real_tools(self):
+        text = (REPO_ROOT / "Python" / "scripts" / "smoke_all_tools.py").read_text(encoding="utf-8")
+        block = text[text.index("PARAMS = {"):text.index("UNKNOWN_MARKERS")]
+        keys = set(re.findall(r'^\s{4}"([a-z_][a-z0-9_]+)":', block, re.MULTILINE))
+        known = {t.name for t in tool_catalog.discover_tools(TOOLS_DIR)}
+        ghosts = keys - known - {"create_input_mapping"}
+        self.assertEqual(ghosts, set(), f"smoke parameter map names non-existent tools: {sorted(ghosts)}")
+
+    def test_docstrings_document_only_real_parameters(self):
+        import ast
+        problems: dict[str, list[str]] = {}
+        for _module, node in tool_catalog.iter_decorated_functions(TOOLS_DIR):
+            documented = self._args_entries(ast.get_docstring(node) or "")
+            signature = set(tool_catalog._params_of(node))
+            ghosts = documented - signature
+            if ghosts:
+                problems[node.name] = sorted(ghosts)
+        self.assertEqual(problems, {}, f"docstrings document non-existent parameters: {problems}")
+
+    def test_instructions_name_only_files_that_exist(self):
+        """Guards the archive_mcp_client.py class of bug: a path that was already deleted."""
+        text = tool_catalog.render_instructions(tool_catalog.discover_tools(TOOLS_DIR))
+        banner = (REPO_ROOT / "Python" / "unreal_mcp_server.py").read_text(encoding="utf-8")
+        for referenced in re.findall(r"`?(Python/[A-Za-z0-9_./]+\.py)`?", text + banner):
+            self.assertTrue((REPO_ROOT / referenced).exists(),
+                            f"instructions name a file that does not exist: {referenced}")
+
+    def test_hygiene_checks_detect_a_planted_ghost(self):
+        """Guard the guard: a docstring naming a parameter that does not exist is caught."""
+        ghost_doc = "Do a thing.\n\nArgs:\n    not_a_real_parameter: nope\n"
+        self.assertEqual(self._args_entries(ghost_doc) - {"blueprint_name"}, {"not_a_real_parameter"})
+
+
 class InstructionsTests(unittest.TestCase):
     def setUp(self):
         self.catalog = tool_catalog.discover_tools(TOOLS_DIR)
