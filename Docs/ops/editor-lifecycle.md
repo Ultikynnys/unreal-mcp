@@ -53,6 +53,11 @@ restart the editor before calling again.
 That means the editor is running a stale `UnrealEditor-UnrealMCP.dll`. Do not retry and do
 not launch another editor: reap, rebuild, restart.
 
+The check is a pre-flight probe, not a reaction to a failure: the server pings first and
+refuses to send the command at all. Validating the command's own reply would be too late,
+because the editor executes a command before it replies - a stale plugin would create or
+delete assets while the server merely declined to report the result.
+
 ```bash
 uv run --project Python python Python/scripts/editor_process.py reap
 "C:\Program Files\Epic Games\UE_5.6\Engine\Build\BatchFiles\Build.bat" MCPGameProjectEditor Win64 Development MCPGameProject/MCPGameProject.uproject -WaitMutex -NoHotReloadFromIDE

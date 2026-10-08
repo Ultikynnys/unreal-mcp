@@ -260,10 +260,15 @@ class UnrealConnection:
         with _connection_lock:
             return self._send_command_unlocked(command, params)
 
-    def _send_command_unlocked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """Send a command to Unreal Engine and get the response (caller holds _connection_lock)."""
-        # Always reconnect for each command, since Unreal closes the connection after each command
-        # This is different from Unity which keeps connections alive
+    def _dispatch(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """One request/response over a fresh socket: connect, send, read, parse, close.
+
+        Returns the parsed reply, and raises when the editor cannot be reached, so a
+        transport failure is never mistaken for a protocol problem. It carries no version
+        logic: the caller decides what a reply means.
+        """
+        # Always reconnect: the bridge closes the socket after each reply, so there is no
+        # persistent connection to reuse.
         if self.socket:
             try:
                 self.socket.close()
@@ -271,48 +276,76 @@ class UnrealConnection:
                 pass
             self.socket = None
             self.connected = False
-        
+
         if not self.connect():
-            logger.error("Failed to connect to Unreal Engine for command")
-            return None
-        
+            raise RuntimeError(
+                f"Could not connect to the Unreal bridge at {UNREAL_HOST}:{UNREAL_PORT} "
+                f"(no editor listening, or the UnrealMCP plugin is not loaded)")
+
         try:
-            # Match Unity's command format exactly
             command_obj = {
-                "type": command,  # Use "type" instead of "command"
-                "params": params or {},  # Use Unity's params or {} pattern
-                # Access key for the sanctioned control plane. The Unreal plugin
-                # (UnrealMCPBridge) refuses any command without it and returns the
-                # control-plane instructions instead. See CONTROL_PLANE_SECRET above.
+                "type": command,
+                "params": params or {},
+                # Access key for the sanctioned control plane. UnrealMCPBridge refuses any
+                # command without it and returns the control-plane instructions instead.
                 "access_key": CONTROL_PLANE_SECRET,
             }
-            
-            # Send without newline, exactly like Unity
             command_json = json.dumps(command_obj)
             logger.debug(f"Sending command: {command_json}")
             self.socket.sendall(command_json.encode('utf-8'))
-            
-            # Read response using improved handler
+
             response_data = self.receive_full_response(self.socket)
             response = json.loads(response_data.decode('utf-8'))
-            
-            # Log complete response for debugging
             logger.debug(f"Complete response from Unreal: {response}")
+            return response
+        finally:
+            self.connected = False
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
 
-            # Fail closed on a contract mismatch BEFORE trusting anything in the reply: a
-            # stale plugin speaks an out-of-date envelope, so a successful-looking result
-            # may not mean what this server thinks it means.
-            reported_version = response.get("protocol") if isinstance(response, dict) else None
-            mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, str(reported_version or ""))
+    def _probe_protocol(self) -> str:
+        """The protocol version the editor reports, or '' when it reports none.
+
+        `ping` touches no UObjects, so it is the safe handshake. It raises if the editor
+        cannot be reached: a dead editor is a connection problem, not a version problem.
+        """
+        reply = self._dispatch("ping")
+        return str(reply.get("protocol") or "") if isinstance(reply, dict) else ""
+
+    def _send_command_unlocked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """Send a command to Unreal Engine and get the response (caller holds _connection_lock)."""
+        try:
+            # Handshake FIRST. Checking the real command's own reply would be too late: the
+            # editor executes a command before it replies, so a stale plugin could still
+            # create or delete assets while we merely refused to report the result. Probe
+            # with a ping (which changes nothing) and refuse before dispatching anything.
+            if command != "ping":
+                mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, self._probe_protocol())
+                if mismatch:
+                    logger.error("Refusing '%s' before dispatch: %s", command, mismatch)
+                    return {"success": False, "result": None, "message": mismatch,
+                            "code": "PROTOCOL_MISMATCH"}
+
+            response = self._dispatch(command, params)
+
+            # Belt and braces: a reply that disagrees with the handshake is refused too, in
+            # case the editor was swapped for a different build between the two round trips.
+            reported = response.get("protocol") if isinstance(response, dict) else None
+            mismatch = protocol_mismatch_error(EXPECTED_PROTOCOL, str(reported or ""))
             if mismatch:
                 logger.error("Refusing command '%s': %s", command, mismatch)
-                response = {"success": False, "result": None, "message": mismatch}
+                return {"success": False, "result": None, "message": mismatch,
+                        "code": "PROTOCOL_MISMATCH"}
+
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
             # Original fields are preserved rather than replaced, so a failure can still be
             # inspected (execute_python's "output" trace, batch "results", ...) instead of
             # collapsing to a bare error with the detail discarded.
-            elif isinstance(response, dict):
+            if isinstance(response, dict):
                 envelope = dict(response)
                 if response.get("status") == "error" or response.get("success") is False:
                     error_message = (
@@ -329,32 +362,13 @@ class UnrealConnection:
                     envelope["result"] = response.get("result")
                     envelope["message"] = response.get("message", "")
                 response = envelope
-            
-            # Always close the connection after command is complete
-            # since Unreal will close it on its side anyway
-            try:
-                self.socket.close()
-            except:
-                pass
-            self.socket = None
-            self.connected = False
-            
+
             return response
-            
+
         except Exception as e:
             logger.error(f"Error sending command: {e}")
-            # Always reset connection state on any error
-            self.connected = False
-            try:
-                self.socket.close()
-            except:
-                pass
-            self.socket = None
-            return {
-                "success": False,
-                "result": None,
-                "message": str(e)
-            }
+            return {"success": False, "result": None, "message": str(e)}
+
 
 # Global connection state
 _unreal_connection: UnrealConnection = None

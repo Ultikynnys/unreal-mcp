@@ -71,6 +71,64 @@ class BridgeStampTests(unittest.TestCase):
         self.assertIn('#include "MCPProtocolVersion.h"', BRIDGE_CPP.read_text(encoding="utf-8"))
 
 
+class PreflightOrderTests(unittest.TestCase):
+    """The check must run BEFORE the command is dispatched.
+
+    Validating the real command's own reply would be too late: the editor executes a command
+    before it replies, so a stale plugin could still create or delete assets while the server
+    only refused to report the result. This is a regression guard for exactly that bug: a
+    mutating call under a version mismatch must never reach the editor.
+    """
+
+    def _connection(self, replies, raise_on=()):
+        conn = server.UnrealConnection()
+        sent: list[str] = []
+
+        def fake_dispatch(command, params=None):
+            sent.append(command)
+            if command in raise_on:
+                raise RuntimeError("editor unreachable")
+            return replies[command]
+
+        conn._dispatch = fake_dispatch
+        return conn, sent
+
+    def test_stale_plugin_refuses_before_dispatching_a_mutating_command(self):
+        conn, sent = self._connection({"ping": {"protocol": "1.0"}})
+        result = conn.send_command("create_blueprint", {"name": "X", "parent_class": "Actor"})
+        self.assertFalse(result["success"])
+        self.assertIn("version mismatch", result["message"])
+        self.assertEqual(sent, ["ping"], "the mutating command must not reach the editor")
+
+    def test_plugin_without_a_version_refuses_before_dispatching(self):
+        conn, sent = self._connection({"ping": {"message": "pong"}})
+        result = conn.send_command("delete_assets", {"asset_paths": ["/Game/X"]})
+        self.assertFalse(result["success"])
+        self.assertEqual(sent, ["ping"])
+
+    def test_matching_version_dispatches_after_the_probe(self):
+        conn, sent = self._connection({
+            "ping": {"protocol": server.EXPECTED_PROTOCOL},
+            "get_capabilities": {"protocol": server.EXPECTED_PROTOCOL,
+                                 "status": "success", "result": {"ok": True}},
+        })
+        result = conn.send_command("get_capabilities")
+        self.assertTrue(result["success"])
+        self.assertEqual(sent, ["ping", "get_capabilities"])
+
+    def test_ping_is_not_probed_again(self):
+        conn, sent = self._connection({"ping": {"protocol": server.EXPECTED_PROTOCOL}})
+        conn.send_command("ping")
+        self.assertEqual(sent, ["ping"])
+
+    def test_transport_failure_is_not_reported_as_a_version_mismatch(self):
+        conn, _sent = self._connection({"get_capabilities": {}}, raise_on=("ping",))
+        result = conn.send_command("get_capabilities")
+        self.assertFalse(result["success"])
+        self.assertIn("unreachable", result["message"])
+        self.assertNotIn("version mismatch", result["message"])
+
+
 class MismatchCheckTests(unittest.TestCase):
     def test_matching_version_is_allowed(self):
         self.assertEqual(server.protocol_mismatch_error("2", "2"), "")
