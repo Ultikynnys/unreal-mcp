@@ -157,12 +157,16 @@ class UnrealSourceContractTests(unittest.TestCase):
         self.assertIn("ObjectTools::ForceReplaceReferences(Destination, Olds)", code)
         positions = [code.index(text) for text in (
             "ObjectTools::ForceReplaceReferences(Destination, Olds)",
-            "UEditorAssetLibrary::SaveAsset(Loaded->GetName(), false)",
+            "const bool bSavedReferencer = ReferencerWorld",
             "CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS)",
             "ObjectTools::ForceDeleteObjects(EmptyPackage, /*bShowConfirmation=*/false)",
             "AR.GetAssetsByPackageName(FName(*PackageName), Remaining)",
         )]
         self.assertEqual(positions, sorted(positions))
+        # A World referencer must not go through the asset save path: that cannot write a map, so
+        # the level keeps its old import on disk, which is what broke the maps during the reorg.
+        self.assertIn("UWorld::FindWorldInPackage(Loaded)", code)
+        self.assertIn("FEditorFileUtils::SaveLevel(ReferencerWorld->PersistentLevel, ReferencerName)", code)
         self.assertIn("Redirector->RemoveFromRoot()", code)
         self.assertIn("AR.WaitForPackage(PackageName)", code)
 
