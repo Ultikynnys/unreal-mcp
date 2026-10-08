@@ -91,6 +91,18 @@ class ServerRevisionTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"UNREAL_MCP_REVISION": "cafebabe"}):
             self.assertEqual(server.repo_revision(), "cafebabe")
 
+    def test_revision_does_not_need_git_on_the_path(self):
+        """The host spawns the server with a PATH that may have no git: .git is read directly.
+
+        Regression for a live failure: the plugin answered the handshake with the right revision
+        while the server refused every call with revision unknown, because its git subprocess
+        could not be found.
+        """
+        expected = head_revision()  # resolved while git is still reachable
+        self.assertEqual(server._revision_from_git_dir(server.REPO_ROOT), expected)
+        with mock.patch.dict(os.environ, {"PATH": "", "UNREAL_MCP_REVISION": ""}):
+            self.assertEqual(server.repo_revision(), expected)
+
     def test_the_removed_constants_are_gone(self):
         for name in ("SERVER_PROTOCOL", "HEADER_PROTOCOL", "read_expected_protocol",
                      "protocol_agreement_error", "protocol_mismatch_error"):

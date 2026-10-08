@@ -84,18 +84,57 @@ UNREAL_READ_TIMEOUT = int(os.getenv("UNREAL_MCP_READ_TIMEOUT", "600"))
 REPO_ROOT = pathlib.Path(_SERVER_DIR).parent
 
 
+def _revision_from_git_dir(root: pathlib.Path) -> str:
+    """The commit at HEAD, read straight out of .git: no git binary, no PATH dependency.
+
+    The server is spawned by an MCP host whose PATH frequently has no git on it (a GUI launcher,
+    a packaged install), so a subprocess call fails while the checkout sits right there. Reading
+    the metadata also makes the handshake work on a machine that never had git on PATH.
+    """
+    git_dir = root / ".git"
+    if git_dir.is_file():
+        # A linked worktree or submodule: ".git" is a file pointing at the real directory.
+        marker = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+        if not marker.startswith("gitdir:"):
+            return ""
+        git_dir = (root / marker.split(":", 1)[1].strip()).resolve()
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if not head.startswith("ref:"):
+        return head  # detached HEAD: the hash is the whole file
+    ref = head.split(":", 1)[1].strip()
+    try:
+        return (git_dir / ref).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    # After a gc a branch lives in packed-refs rather than in its own file.
+    try:
+        packed = (git_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in packed.splitlines():
+        if line.endswith(" " + ref):
+            return line.split(" ", 1)[0].strip()
+    return ""
+
+
 def repo_revision() -> str:
     """The commit this server runs from. UNREAL_MCP_REVISION wins, for a packaged or copied tree."""
     override = os.getenv("UNREAL_MCP_REVISION")
     if override:
         return override.strip()
+    from_git_dir = _revision_from_git_dir(REPO_ROOT)
+    if from_git_dir:
+        return from_git_dir
     try:
         result = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        logger.error("Could not read the git revision: %s", error)
+        logger.error("Could not read the revision from .git or from git: %s", error)
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
