@@ -60,6 +60,9 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/World.h"
 #include "RenderingThread.h"
+#include "Serialization/ArchiveProxy.h"
+#include "UObject/PackageFileSummary.h"
+#include "UObject/ObjectResource.h"
 
 namespace
 {
@@ -1896,9 +1899,171 @@ namespace
         return false;
     }
 
-    // A package moved in the same batch as its dependency can stay saved with the old import: the
-    // in-memory rewire never re-saves it (observed live on MI_SchemePickup). Loading and saving the
-    // referencers the registry still reports rewrites them; one registry query per move otherwise.
+    class FDiskImportArchive : public FArchiveProxy
+    {
+    public:
+        TArray<FName> Names;
+
+        explicit FDiskImportArchive(FArchive& Inner) : FArchiveProxy(Inner) {}
+
+        using FArchiveProxy::operator<<;
+        virtual FArchive& operator<<(FName& Name) override
+        {
+            int32 Index = 0, Number = 0;
+            InnerArchive << Index << Number;
+            if (!Names.IsValidIndex(Index) || Number < 0)
+            {
+                SetError();
+                Name = NAME_None;
+            }
+            else { Name = FName(Names[Index], Number); }
+            return *this;
+        }
+    };
+
+    bool ReadDiskImports(const FString& PackageName, TSet<FName>& Imports, FString& Error)
+    {
+        FString Filename;
+        if (!FPackageName::DoesPackageExist(PackageName, &Filename))
+        {
+            Error = TEXT("Package missing on disk: ") + PackageName;
+            return false;
+        }
+        TUniquePtr<FArchive> File(IFileManager::Get().CreateFileReader(*Filename));
+        if (!File)
+        {
+            Error = TEXT("Cannot read saved package: ") + Filename;
+            return false;
+        }
+        FPackageFileSummary Summary;
+        *File << Summary;
+        const int64 Size = File->TotalSize();
+        auto ValidTable = [Size](int32 Count, int32 Offset)
+        {
+            return Count >= 0 && Count <= Size / 4 &&
+                (Count == 0 || (Offset > 0 && Offset < Size));
+        };
+        if (File->IsError() || !Summary.IsFileVersionValid() || Summary.IsFileVersionTooOld() ||
+            Summary.IsFileVersionTooNew() || !ValidTable(Summary.NameCount, Summary.NameOffset) ||
+            !ValidTable(Summary.ImportCount, Summary.ImportOffset) ||
+            !ValidTable(Summary.SoftPackageReferencesCount, Summary.SoftPackageReferencesOffset) ||
+            !ValidTable(Summary.SoftObjectPathsCount, Summary.SoftObjectPathsOffset))
+        {
+            Error = TEXT("Invalid package header during import verification: ") + Filename;
+            return false;
+        }
+        File->SetUEVer(Summary.GetFileVersionUE());
+        File->SetLicenseeUEVer(Summary.GetFileVersionLicenseeUE());
+        File->SetCustomVersions(Summary.GetCustomVersionContainer());
+        File->SetFilterEditorOnly((Summary.GetPackageFlags() & PKG_FilterEditorOnly) != 0);
+        FDiskImportArchive Reader(*File);
+        Reader.Seek(Summary.NameOffset);
+        for (int32 Index = 0; Index < Summary.NameCount && !Reader.IsError(); ++Index)
+        {
+            FNameEntrySerialized Entry(ENAME_LinkerConstructor);
+            Reader << Entry;
+            Reader.Names.Add(FName(Entry));
+        }
+        Reader.Seek(Summary.ImportOffset);
+        for (int32 Index = 0; Index < Summary.ImportCount && !Reader.IsError(); ++Index)
+        {
+            FObjectImport Import;
+            Reader << Import;
+            if (Import.OuterIndex.IsNull() && Import.ClassName == FName(TEXT("Package")))
+            {
+                Imports.Add(Import.ObjectName);
+            }
+#if WITH_EDITORONLY_DATA
+            if (!Import.PackageName.IsNone()) { Imports.Add(Import.PackageName); }
+#endif
+        }
+        Reader.Seek(Summary.SoftPackageReferencesOffset);
+        for (int32 Index = 0; Index < Summary.SoftPackageReferencesCount && !Reader.IsError(); ++Index)
+        {
+            FName Reference;
+            Reader << Reference;
+            Imports.Add(Reference);
+        }
+        Reader.Seek(Summary.SoftObjectPathsOffset);
+        for (int32 Index = 0; Index < Summary.SoftObjectPathsCount && !Reader.IsError(); ++Index)
+        {
+            FSoftObjectPath Path;
+            Path.SerializePath(Reader);
+            if (!Path.IsNull()) { Imports.Add(FName(*Path.GetLongPackageName())); }
+        }
+        if (Reader.IsError() || File->IsError())
+        {
+            Error = TEXT("Cannot parse saved package imports: ") + Filename;
+            return false;
+        }
+        return true;
+    }
+
+    bool SaveAndVerifyPackage(UPackage* Package, const TArray<FString>& OldPackages, FString& Error)
+    {
+        if (!Package)
+        {
+            Error = TEXT("Referencer package could not be loaded");
+            return false;
+        }
+        const FString Name = Package->GetName();
+        TSet<FName> Forbidden;
+        for (const FString& Old : OldPackages) { Forbidden.Add(FName(*Old)); }
+        if (OldPackages.IsEmpty())
+        {
+            TSet<FName> Before;
+            if (!ReadDiskImports(Name, Before, Error)) { return false; }
+            IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+            for (FName Import : Before)
+            {
+                TArray<FAssetData> Assets;
+                AR.GetAssetsByPackageName(Import, Assets);
+                for (const FAssetData& Asset : Assets)
+                {
+                    if (Asset.AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName())
+                    { Forbidden.Add(Import); }
+                }
+                if (Import.ToString().StartsWith(TEXT("/Game/")) && !FPackageName::DoesPackageExist(Import.ToString()))
+                { Forbidden.Add(Import); }
+            }
+        }
+        // Renames preserve object identity, so referencers can remain clean despite stale disk imports.
+        Package->SetDirtyFlag(true);
+        UWorld* World = UWorld::FindWorldInPackage(Package);
+        FString MapFilename;
+        if (World && !FPackageName::TryConvertLongPackageNameToFilename(Name, MapFilename, FPackageName::GetMapPackageExtension()))
+        {
+            Error = TEXT("Cannot resolve map filename: ") + Name;
+            return false;
+        }
+        const bool bSaved = World
+            ? (World->PersistentLevel && FEditorFileUtils::SaveLevel(World->PersistentLevel, MapFilename))
+            : UEditorAssetLibrary::SaveLoadedAsset(Package, false);
+        if (!bSaved)
+        {
+            Error = TEXT("Referencer package failed to save: ") + Name;
+            return false;
+        }
+        TSet<FName> After;
+        if (!ReadDiskImports(Name, After, Error)) { return false; }
+        for (FName Old : Forbidden)
+        {
+            if (After.Contains(Old))
+            {
+                Error = TEXT("Saved package still imports old path on disk: ") + Name + TEXT(" -> ") + Old.ToString();
+                return false;
+            }
+        }
+        FString Filename;
+        if (!FPackageName::DoesPackageExist(Name, &Filename))
+        {
+            Error = TEXT("Saved package disappeared: ") + Name;
+            return false;
+        }
+        FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().ScanFilesSynchronous({Filename}, true);
+        return true;
+    }
+
     int32 ResaveStaleReferencers(const TArray<FString>& MovedSources, FString& OutError)
     {
         FAssetRegistryModule& AssetRegistryModule =
@@ -1919,22 +2084,15 @@ namespace
                 Handled.Add(Name);
 
                 UObject* Loaded = UEditorAssetLibrary::LoadAsset(Name);
-                if (!Loaded) { continue; } // gone, or never loadable: nothing to write
-                UPackage* LoadedPackage = Loaded->GetOutermost();
-                UWorld* LoadedWorld = LoadedPackage ? UWorld::FindWorldInPackage(LoadedPackage) : nullptr;
-                // Pass the PACKAGE, not the object's bare name: SaveAsset("M_Foo") quietly fails,
-                // and a map needs the level path or it keeps its old import on disk.
-                const bool bReSaved = LoadedWorld
-                    ? (LoadedWorld->PersistentLevel
-                        && FEditorFileUtils::SaveLevel(LoadedWorld->PersistentLevel, LoadedPackage->GetName()))
-                    : UEditorAssetLibrary::SaveLoadedAsset(Loaded, false);
+                const bool bReSaved = SaveAndVerifyPackage(Loaded ? Loaded->GetOutermost() : nullptr, MovedSources, OutError);
                 if (bReSaved)
                 {
                     ++Resaved;
                 }
                 else
                 {
-                    OutError = FString::Printf(TEXT("%s could not be re-saved"), *Name);
+                    OutError = Name + TEXT(": ") + OutError;
+                    return Resaved;
                 }
             }
         }
@@ -1951,7 +2109,12 @@ namespace
         {
             Job->Items.Add(FString::Printf(TEXT("resaved %d package(s) still importing a moved path"), Resaved));
         }
-        if (!SweepError.IsEmpty()) { Job->Items.Add(TEXT("resave sweep: ") + SweepError); }
+        if (!SweepError.IsEmpty())
+        {
+            Job->State = TEXT("failed");
+            Job->Error = TEXT("resave sweep: ") + SweepError;
+            Job->Items.Add(Job->Error);
+        }
     }
 
     bool NormalizeAssetPackage(const FString& Input, FString& Package)
@@ -2023,8 +2186,13 @@ namespace
                     if (!Loaded)
                     {
                         Loaded = LoadPackage(nullptr, *Referencer.ToString(), LOAD_None);
-                        if (Loaded) { LoadedReferencers.Add(Loaded); }
                     }
+                    if (!Loaded)
+                    {
+                        Error = TEXT("Referencer package could not be loaded: ") + Referencer.ToString();
+                        return false;
+                    }
+                    LoadedReferencers.Add(Loaded);
                 }
                 // Rewire in-memory references, then persist them BEFORE touching the
                 // redirector: a loaded level/blueprint keeps resolving through the old path
@@ -2032,24 +2200,23 @@ namespace
                 TArray<UObject*> Olds;
                 Olds.Add(Redirector);
                 ObjectTools::ForceReplaceReferences(Destination, Olds);
+                TMap<FSoftObjectPath, FSoftObjectPath> Remap;
+                const FSoftObjectPath OldPath(Redirector), NewPath(Destination);
+                Remap.Add(OldPath, NewPath);
+                if (Cast<UBlueprint>(Destination))
+                {
+                    Remap.Add(FSoftObjectPath(OldPath.ToString() + TEXT("_C")), FSoftObjectPath(NewPath.ToString() + TEXT("_C")));
+                    Remap.Add(FSoftObjectPath(FString::Printf(TEXT("%s.Default__%s_C"), *OldPath.GetLongPackageName(), *OldPath.GetAssetName())),
+                        FSoftObjectPath(FString::Printf(TEXT("%s.Default__%s_C"), *NewPath.GetLongPackageName(), *NewPath.GetAssetName())));
+                }
+                FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get().RenameReferencingSoftObjectPaths(LoadedReferencers, Remap);
                 for (UPackage* Loaded : LoadedReferencers)
                 {
-                    const FString ReferencerName = Loaded ? Loaded->GetName() : FString();
-                    UWorld* ReferencerWorld = Loaded ? UWorld::FindWorldInPackage(Loaded) : nullptr;
-                    // A map cannot be written through the asset save path: saving it as an asset
-                    // silently leaves its old import on disk, which is how dangling refs appear.
-                    const bool bSavedReferencer = ReferencerWorld
-                        ? (ReferencerWorld->PersistentLevel
-                            && FEditorFileUtils::SaveLevel(ReferencerWorld->PersistentLevel, ReferencerName))
-                        : (Loaded && UEditorAssetLibrary::SaveLoadedAsset(Loaded, false));
-                    if (!bSavedReferencer)
-                    {
-                        Error = TEXT("Referencer package failed to save: ") + ReferencerName;
-                        return false;
-                    }
+                    if (!SaveAndVerifyPackage(Loaded, {PackageName}, Error)) { return false; }
                 }
                 }
             }
+            if (!bDelete) { return true; }
             Redirector->RemoveFromRoot();
             CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
             // Re-look-up after GC: the raw pointer is stale if the object was collected.
@@ -2269,7 +2436,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAssets(const TShared
         {
             Job->Phase = TEXT("fixup: ") + Request.Source;
             FString Error;
-            FixAndVerifyRedirector(Request.Source, true, Error);
+            if (!FixAndVerifyRedirector(Request.Source, true, Error)) { return Fail(Error); }
             // Saved referencer dependency updates are consumed on later registry ticks.
             *VerificationStarted = FPlatformTime::Seconds();
             return true;
@@ -2361,14 +2528,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleResavePackages(const TSh
 
         UObject* Loaded = UEditorAssetLibrary::LoadAsset(AssetPath);
         UPackage* LoadedPackage = Loaded ? Loaded->GetOutermost() : nullptr;
-        UWorld* LoadedWorld = LoadedPackage ? UWorld::FindWorldInPackage(LoadedPackage) : nullptr;
-        // resave_packages is the second step of a move's fixup, so a map here must take the level
-        // save path too, or it reports "saved" while keeping its old import on disk.
-        const bool bOk = LoadedWorld
-            ? (LoadedWorld->PersistentLevel
-                && FEditorFileUtils::SaveLevel(LoadedWorld->PersistentLevel, LoadedPackage->GetName()))
-            : (Loaded && UEditorAssetLibrary::SaveLoadedAsset(Loaded, /*bOnlyIfIsDirty=*/false));
-        Job->Items.Add(FString::Printf(TEXT("%s: %s"), *AssetPath, bOk ? TEXT("saved") : TEXT("FAILED")));
+        FString Error;
+        if (!SaveAndVerifyPackage(LoadedPackage, {}, Error))
+        {
+            Job->State = TEXT("failed");
+            Job->Error = AssetPath + TEXT(": ") + Error;
+            Job->Items.Add(Job->Error);
+            return false;
+        }
+        Job->Items.Add(AssetPath + TEXT(": saved, disk imports verified"));
 
         Job->Done++;
         Job->Phase = FString::Printf(TEXT("%d/%d assets"), Job->Done, Job->Total);
