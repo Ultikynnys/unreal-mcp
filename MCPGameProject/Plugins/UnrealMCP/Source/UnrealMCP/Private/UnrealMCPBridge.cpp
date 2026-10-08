@@ -321,8 +321,7 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("set_physics_properties") ||
         CommandType == TEXT("compile_blueprint") ||
         CommandType == TEXT("set_blueprint_property") ||
-        CommandType == TEXT("set_static_mesh_properties") ||
-        CommandType == TEXT("set_pawn_properties"))
+        CommandType == TEXT("set_static_mesh_properties"))
     {
         return BlueprintCommands->HandleCommand(CommandType, Params);
     }
@@ -334,7 +333,6 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
         CommandType == TEXT("add_blueprint_event_node") ||
         CommandType == TEXT("add_blueprint_input_action_node") ||
         CommandType == TEXT("add_blueprint_function_node") ||
-        CommandType == TEXT("add_blueprint_get_component_node") ||
         CommandType == TEXT("add_blueprint_variable") ||
         CommandType == TEXT("add_blueprint_node") ||
         CommandType == TEXT("delete_blueprint_node") ||

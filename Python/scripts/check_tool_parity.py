@@ -57,6 +57,49 @@ def collect_cpp_commands(root: pathlib.Path) -> tuple[set[str], list[str]]:
     return commands, [str(p.relative_to(root)) for p in files]
 
 
+def collect_routed_commands(root: pathlib.Path) -> set[str]:
+    """Commands the bridge routes to a handler class (ExecuteCommand if-chains).
+
+    A command can appear here and still be unserved at runtime if the target
+    handler class never dispatches it - that returns 'Unknown <class> command'.
+    Commands the bridge answers inline (e.g. ping, reload_server) are excluded:
+    they never reach a handler class, so they cannot be undispatched.
+    """
+    bridge = root / CPP_BRIDGE_REL
+    if not bridge.exists():
+        return set()
+    text = bridge.read_text(encoding="utf-8", errors="replace")
+    delegated: set[str] = set()
+    for m in CPP_CMD_RE.finditer(text):
+        brace = text.find("{", m.end())
+        if brace == -1:
+            continue
+        depth = 0
+        i = brace
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = text[brace:i + 1]
+        if "->HandleCommand(" in body:
+            delegated.add(m.group(1))
+    return delegated
+
+
+def collect_dispatched_commands(root: pathlib.Path) -> dict[str, set[str]]:
+    """{command: {command-class files that dispatch it}} from the handler classes."""
+    dispatched: dict[str, set[str]] = {}
+    for path in sorted(root.glob(CPP_COMMANDS_GLOB)):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for cmd in CPP_CMD_RE.findall(text):
+            dispatched.setdefault(cmd, set()).add(path.name)
+    return dispatched
+
+
 def collect_python_commands(root: pathlib.Path) -> tuple[dict[str, set[str]], list[str]]:
     """Return ({command: {tool files}}, files_scanned) sent by the Python layer."""
     commands: dict[str, set[str]] = {}
@@ -245,6 +288,12 @@ def main(argv: list[str] | None = None) -> int:
     missing = sorted(cmd for cmd in py_commands if cmd not in cpp_commands)
     extra = sorted(cpp for cpp in cpp_commands if cpp not in py_commands)
 
+    # Routed-but-not-dispatched: the bridge forwards the command to a handler class
+    # that never implements it, so the runtime reply is 'Unknown <class> command'.
+    routed = collect_routed_commands(root)
+    dispatched = collect_dispatched_commands(root)
+    unrouted = sorted(cmd for cmd in routed if cmd not in dispatched)
+
     # Parameter-level drift (best effort): a command present on both sides whose
     # Python-sent parameters are not all read by the matching C++ handler.
     cpp_handlers = collect_command_handlers(root)
@@ -283,6 +332,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {cmd}")
         print()
 
+    if unrouted:
+        print(f"FAIL: {len(unrouted)} command(s) are routed by the bridge but no handler "
+              f"class dispatches them (runtime 'Unknown <class> command'):")
+        for cmd in unrouted:
+            print(f"  - {cmd}")
+        print()
+
     if drift:
         print(f"FAIL: {len(drift)} command(s) send a parameter the C++ handler never reads:")
         for cmd in sorted(drift):
@@ -301,13 +357,17 @@ def main(argv: list[str] | None = None) -> int:
         print("Parity check FAILED: the Python tool layer advertises commands the "
               "C++ plugin does not implement.")
         return 1
+    if unrouted:
+        print("Parity check FAILED: the bridge routes commands that no handler class "
+              "dispatches, so those calls fail at runtime.")
+        return 1
     if drift:
         print("Parity check FAILED: parameter drift between the Python tool layer "
               "and the C++ handlers.")
         return 1
 
-    print("Parity check PASSED: every Python command is handled by the C++ plugin "
-          "and no sent parameter is unread.")
+    print("Parity check PASSED: every Python command is handled by the C++ plugin, "
+          "every routed command is dispatched, and no sent parameter is unread.")
     return 0
 
 

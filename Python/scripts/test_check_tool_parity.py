@@ -100,6 +100,55 @@ class ParityCheckTests(unittest.TestCase):
             self.assertIn("do_thing", result.stdout)
             self.assertIn("b", result.stdout)
 
+    def test_routed_but_undispatched_fails(self):
+        """A command the bridge routes to a class that never dispatches it must fail.
+
+        That call returns 'Unknown <class> command' at runtime, so it is a real
+        broken tool even though the name appears in the bridge source.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _write(tmp, CPP_COMMANDS_REL,
+                   "TSharedPtr<FJsonObject> FThingCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("do_thing")) { return HandleDoThing(Params); }\n'
+                   "    return nullptr;\n"
+                   "}\n")
+            _write(tmp, BRIDGE_REL,
+                   "TSharedPtr<FJsonObject> UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("do_thing") ||\n'
+                   '        CommandType == TEXT("ghost_command"))\n'
+                   "    {\n"
+                   "        return ThingCommands->HandleCommand(CommandType, Params);\n"
+                   "    }\n"
+                   "    return nullptr;\n"
+                   "}\n")
+            _make_py_tool(tmp, ["do_thing"])
+            result = self._run(tmp)
+            self.assertEqual(result.returncode, 1,
+                             "checker must fail when the bridge routes an undispatched command")
+            self.assertIn("ghost_command", result.stdout)
+
+    def test_inline_bridge_command_is_allowed(self):
+        """A command the bridge answers inline (no handler class) is not undispatched."""
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d)
+            _write(tmp, BRIDGE_REL,
+                   "TSharedPtr<FJsonObject> UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)\n"
+                   "{\n"
+                   '    if (CommandType == TEXT("ping"))\n'
+                   "    {\n"
+                   "        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();\n"
+                   '        Result->SetBoolField(TEXT("success"), true);\n'
+                   "        return Result;\n"
+                   "    }\n"
+                   "    return nullptr;\n"
+                   "}\n")
+            _make_py_tool(tmp, [])
+            result = self._run(tmp)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_real_repo_has_parity(self):
         """The actual fork must satisfy the parity contract."""
         result = self._run(REPO_ROOT)
