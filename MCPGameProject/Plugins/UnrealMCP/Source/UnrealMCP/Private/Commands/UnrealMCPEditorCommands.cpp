@@ -440,16 +440,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleGetActorsInLevel(Params);
     }
-    else if (CommandType == TEXT("find_actors_by_name"))
+    else if (CommandType == TEXT("spawn_actor"))
     {
-        return HandleFindActorsByName(Params);
-    }
-    else if (CommandType == TEXT("spawn_actor") || CommandType == TEXT("create_actor"))
-    {
-        if (CommandType == TEXT("create_actor"))
-        {
-            UE_LOG(LogTemp, Warning, TEXT("'create_actor' command is deprecated and will be removed in a future version. Please use 'spawn_actor' instead."));
-        }
         return HandleSpawnActor(Params);
     }
     else if (CommandType == TEXT("delete_actor"))
@@ -459,10 +451,6 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("set_actor_transform"))
     {
         return HandleSetActorTransform(Params);
-    }
-    else if (CommandType == TEXT("get_actor_properties"))
-    {
-        return HandleGetActorProperties(Params);
     }
     else if (CommandType == TEXT("set_actor_property"))
     {
@@ -478,12 +466,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleFocusViewport(Params);
     }
-    else if (CommandType == TEXT("take_screenshot"))
-    {
-        return HandleTakeScreenshot(Params);
-    }
     
-    else if (CommandType == TEXT("get_actor_details")) { return HandleGetActorProperties(Params); }
+    else if (CommandType == TEXT("get_actor_details")) { return HandleGetActorDetails(Params); }
     else if (CommandType == TEXT("get_capabilities")) { return HandleGetCapabilities(Params); }
     else if (CommandType == TEXT("query_assets")) { return HandleQueryAssets(Params); }
     else if (CommandType == TEXT("get_asset_details")) { return HandleGetAssetDetails(Params); }
@@ -2783,32 +2767,6 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const T
     return ResultObj;
 }
 
-TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindActorsByName(const TSharedPtr<FJsonObject>& Params)
-{
-    FString Pattern;
-    if (!Params->TryGetStringField(TEXT("pattern"), Pattern))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pattern' parameter"));
-    }
-    
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(FUnrealMCPCommonUtils::GetEditorWorld(), AActor::StaticClass(), AllActors);
-    
-    TArray<TSharedPtr<FJsonValue>> MatchingActors;
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName().Contains(Pattern))
-        {
-            MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
-        }
-    }
-    
-    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-    ResultObj->SetArrayField(TEXT("actors"), MatchingActors);
-    
-    return ResultObj;
-}
-
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TSharedPtr<FJsonObject>& Params)
 {
     // Get required parameters
@@ -3002,7 +2960,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const 
     return FUnrealMCPCommonUtils::ActorToJsonObject(TargetActor, true);
 }
 
-TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params)
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorDetails(const TSharedPtr<FJsonObject>& Params)
 {
     // Get actor name
     FString ActorName;
@@ -3229,41 +3187,5 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
     return ResultObj;
 }
 
-TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params)
-{
-    // Get file path parameter
-    FString FilePath;
-    if (!Params->TryGetStringField(TEXT("filepath"), FilePath))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'filepath' parameter"));
-    }
-    
-    // Ensure the file path has a proper extension
-    if (!FilePath.EndsWith(TEXT(".png")))
-    {
-        FilePath += TEXT(".png");
-    }
 
-    // Get the active viewport
-    if (GEditor && GEditor->GetActiveViewport())
-    {
-        FViewport* Viewport = GEditor->GetActiveViewport();
-        TArray<FColor> Bitmap;
-        FIntRect ViewportRect(0, 0, Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y);
-        
-        if (Viewport->ReadPixels(Bitmap, FReadSurfaceDataFlags(), ViewportRect))
-        {
-            TArray<uint8> CompressedBitmap;
-            FImageUtils::ThumbnailCompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
-            
-            if (FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
-            {
-                TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-                ResultObj->SetStringField(TEXT("filepath"), FilePath);
-                return ResultObj;
-            }
-        }
-    }
-    
-    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+ 

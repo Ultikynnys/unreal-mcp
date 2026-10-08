@@ -26,27 +26,7 @@ Get a list of all actors in the current level.
 }
 ```
 
-### find_actors_by_name
-
-Find actors in the current level by name pattern.
-
-**Parameters:**
-- `pattern` (string) - The name or partial name pattern to search for
-
-**Returns:**
-- `{"success": true, "actors": [...], "count": N}` on success, or `{"success": false, "message": "..."}` on failure
-
-**Example:**
-```json
-{
-  "command": "find_actors_by_name",
-  "params": {
-    "pattern": "Cube"
-  }
-}
-```
-
-### create_actor
+### spawn_actor
 
 Create a new actor in the current level.
 
@@ -63,7 +43,7 @@ Create a new actor in the current level.
 **Example:**
 ```json
 {
-  "command": "create_actor",
+  "command": "spawn_actor",
   "params": {
     "name": "MyCube",
     "type": "CUBE",
@@ -119,20 +99,20 @@ Set the transform (location, rotation, scale) of an actor.
 }
 ```
 
-### get_actor_properties
+### get_actor_details
 
-Get all properties of an actor.
+Inspect an actor: world bounds, components, materials, and light settings.
 
 **Parameters:**
 - `name` (string) - The name of the actor
 
 **Returns:**
-- Object containing all actor properties
+- Object containing actor details
 
 **Example:**
 ```json
 {
-  "command": "get_actor_properties",
+  "command": "get_actor_details",
   "params": {
     "name": "MyCube"
   }
@@ -161,7 +141,7 @@ All command responses include a "success" field indicating whether the operation
 
 ### Actor Types
 
-Supported actor types for the `create_actor` command:
+Supported actor types for the `spawn_actor` command:
 
 - `CUBE` - Static mesh cube
 - `SPHERE` - Static mesh sphere

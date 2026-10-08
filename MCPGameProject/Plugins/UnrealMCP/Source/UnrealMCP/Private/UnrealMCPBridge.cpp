@@ -267,16 +267,12 @@ TSharedPtr<FJsonObject> UUnrealMCPBridge::DispatchCommand(const FString& Command
 
     // Editor Commands (including actor manipulation, batch_execute and execute_python)
     if (CommandType == TEXT("get_actors_in_level") ||
-        CommandType == TEXT("find_actors_by_name") ||
         CommandType == TEXT("spawn_actor") ||
-        CommandType == TEXT("create_actor") ||
         CommandType == TEXT("delete_actor") ||
         CommandType == TEXT("set_actor_transform") ||
-        CommandType == TEXT("get_actor_properties") ||
         CommandType == TEXT("set_actor_property") ||
         CommandType == TEXT("spawn_blueprint_actor") ||
         CommandType == TEXT("focus_viewport") ||
-        CommandType == TEXT("take_screenshot") ||
         CommandType == TEXT("get_actor_details") ||
         CommandType == TEXT("get_capabilities") ||
         CommandType == TEXT("query_assets") ||

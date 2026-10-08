@@ -379,15 +379,14 @@ def info():
     ## Editor Tools
     ### Viewport and Screenshots
     - `focus_viewport(target, location, distance, orientation)` - Focus viewport
-    - `take_screenshot(filename, show_ui, resolution)` - Capture screenshots
+    - `capture_viewport_screenshot()` / `capture_pie_screenshot(...)` - Capture screenshots
 
     ### Actor Management
     - `get_actors_in_level()` - List all actors in current level
-    - `find_actors_by_name(pattern)` - Find actors by name pattern
     - `spawn_actor(name, type, location=[0,0,0], rotation=[0,0,0], scale=[1,1,1])` - Create actors
     - `delete_actor(name)` - Remove actors
     - `set_actor_transform(name, location, rotation, scale)` - Modify actor transform
-    - `get_actor_properties(name)` - Get actor properties
+    - `get_actor_details(name)` - Inspect an actor (bounds, components, materials)
     
     ## Blueprint Management
     - `create_blueprint(name, parent_class)` - Create new Blueprint classes
@@ -396,7 +395,6 @@ def info():
     - `set_physics_properties(blueprint_name, component_name)` - Configure physics
     - `compile_blueprint(blueprint_name)` - Compile Blueprint changes
     - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set properties
-    - `set_pawn_properties(blueprint_name)` - Configure Pawn settings
     - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
     
     ## Blueprint Node Management

@@ -44,43 +44,6 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def find_actors_by_name(ctx: Context, pattern: str) -> Dict[str, Any]:
-        """Find actors by name pattern.
-
-        Returns {"success", "actors", "count"} on success, or {"success": False,
-        "message"} on failure, so a bridge error is never indistinguishable from an
-        empty match set.
-        """
-        from unreal_mcp_server import get_unreal_connection
-        
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            response = unreal.send_command("find_actors_by_name", {
-                "pattern": pattern
-            })
-            
-            if not response:
-                logger.error("find_actors_by_name: no response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
-            
-            if response.get("success") is False:
-                return {"success": False, "message": response.get("message", "Unknown error")}
-            
-            # Backend replies are normalized to {"success", "result", "message"};
-            # the actor array lives under result.actors, not at the top level.
-            result = response.get("result") or {}
-            actors = result.get("actors", [])
-            return {"success": True, "actors": actors, "count": len(actors)}
-            
-        except Exception as e:
-            logger.error(f"Error finding actors: {e}")
-            return {"success": False, "message": str(e)}
-    
-    @mcp.tool()
     def spawn_actor(
         ctx: Context,
         name: str,
@@ -202,20 +165,6 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(f"Error setting transform: {e}")
             return {"success": False, "message": str(e)}
     
-    @mcp.tool()
-    def get_actor_properties(ctx: Context, name: str) -> Dict[str, Any]:
-        """Get all properties of an actor (redirects to get_actor_details)."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            return unreal.send_command("get_actor_details", {"name": name})
-        except Exception as e:
-            logger.error(f"Error getting actor properties: {e}")
-            return {"success": False, "message": str(e)}
-
     @mcp.tool()
     def set_actor_property(
         ctx: Context,

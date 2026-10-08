@@ -33,14 +33,12 @@ Focus the viewport on a specific actor or location.
 }
 ```
 
-### take_screenshot
+### capture_viewport_screenshot
 
-Capture a screenshot of the viewport.
+Capture the active editor viewport at its current resolution and return the saved path.
 
 **Parameters:**
-- `filename` (string, optional) - Name of the file to save the screenshot as (default: "screenshot.png")
-- `show_ui` (boolean, optional) - Whether to include UI elements in the screenshot (default: false)
-- `resolution` (array, optional) - [Width, Height] for the screenshot
+- `filename` (string, optional) - Name of the file to save the screenshot as (default: "MCP_Screenshot.png")
 
 **Returns:**
 - Result of the screenshot operation
@@ -48,14 +46,23 @@ Capture a screenshot of the viewport.
 **Example:**
 ```json
 {
-  "command": "take_screenshot",
+  "command": "capture_viewport_screenshot",
   "params": {
-    "filename": "my_scene.png",
-    "show_ui": false,
-    "resolution": [1920, 1080]
+    "filename": "my_scene.png"
   }
 }
 ```
+
+### capture_pie_screenshot
+
+Capture the Play-In-Editor window from a world location/orientation. Requires an active PIE session.
+
+**Parameters:**
+- `filename` (string, optional) - Output PNG name (default: "MCP_PIE_Screenshot.png")
+- `location` (array, optional) - [X, Y, Z] world location for the capture camera
+- `rotation` (array, optional) - [Pitch, Yaw, Roll] for the capture camera
+- `width` / `height` (integer, optional) - Image size (default 1280x720)
+- `fov` (number, optional) - Horizontal field of view in degrees
 
 ## Error Handling
 
@@ -86,8 +93,8 @@ focus_response = unreal.send_command("focus_viewport", {
 })
 print(focus_response)
 
-# Take a screenshot
-screenshot_response = unreal.send_command("take_screenshot", {"filename": "my_scene.png"})
+# Capture a screenshot
+screenshot_response = unreal.send_command("capture_viewport_screenshot", {"filename": "my_scene.png"})
 print(screenshot_response)
 ```
 

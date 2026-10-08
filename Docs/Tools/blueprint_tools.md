@@ -190,34 +190,6 @@ Set a property on a Blueprint class default object.
 }
 ```
 
-### set_pawn_properties
-
-Set common Pawn properties on a Blueprint.
-
-**Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint (must be a Pawn or Character)
-- `auto_possess_player` (string, optional) - Auto possess player setting (None, "Disabled", "Player0", "Player1", etc.), defaults to empty string
-- `use_controller_rotation_yaw` (boolean, optional) - Whether the pawn should use the controller's yaw rotation, defaults to false
-- `use_controller_rotation_pitch` (boolean, optional) - Whether the pawn should use the controller's pitch rotation, defaults to false
-- `use_controller_rotation_roll` (boolean, optional) - Whether the pawn should use the controller's roll rotation, defaults to false
-- `can_be_damaged` (boolean, optional) - Whether the pawn can be damaged, defaults to true
-
-**Returns:**
-- Response indicating success or failure with detailed results for each property
-
-**Example:**
-```json
-{
-  "command": "set_pawn_properties",
-  "params": {
-    "blueprint_name": "MyPawn",
-    "auto_possess_player": "Player0",
-    "use_controller_rotation_yaw": true,
-    "can_be_damaged": true
-  }
-}
-```
-
 ### spawn_blueprint_actor
 
 Spawn an actor from a Blueprint.
