@@ -549,10 +549,14 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         Promise->SetValue(ResultString);
     };
     
-    // execute_python runs user code, and a synchronous asset import re-enters the game-thread
-    // task processor; inside AsyncTask (RecursionGuard == 1) that trips the TaskGraph abort, so
-    // it dispatches on the core ticker (guard 0). Others keep AsyncTask for modal-time recovery.
-    if (CommandType == TEXT("execute_python"))
+    // Level-switching commands swap the active world; from AsyncTask they run mid-frame (inside
+    // UWorld::Tick) and trip TickTaskManager's "!LevelList.Contains(TickTaskLevel)" assert. Like
+    // execute_python, dispatch on the core ticker, which ticks after GEngine->Tick/EndFrame.
+    const bool bDeferToCoreTicker = CommandType == TEXT("execute_python")
+        || CommandType == TEXT("load_level")
+        || CommandType == TEXT("create_level")
+        || CommandType == TEXT("delete_level");
+    if (bDeferToCoreTicker)
     {
         FTSTicker::GetCoreTicker().AddTicker(
             FTickerDelegate::CreateLambda(
