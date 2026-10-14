@@ -55,6 +55,7 @@ was wired in. If any check fails to import, the runner prints the command that f
 | protocol version agreement | The Python declaration, the C++ macro and the plugin's reported version disagreeing |
 | modal + failure guards | Losing the unattended-script guard, the modal pre-flight or the failure-reason passthrough (the dialog that could block an automated job) |
 | editor lifecycle helpers | The reaper's project scoping, the snapshot-freshness rule, or the crash-marker cleanup regressing |
+| plugin build helpers | The force-refresh, the header parse or the revision verdict regressing, so a rebuild keeps a stale baked revision |
 | asset tool wrappers | Move/preview defaults, the ambiguous-input guard, or the redirector-cleanup ordering in the C++ moving |
 | C++ comment length | A comment block in the plugin growing past 3 lines: long comments are re-read on every view and every diff, and a comment that restates the code goes stale. One line preferred; raise or lower with `--max-lines` |
 | workflow pins | A floating `runs-on: *-latest` label or an action pinned to a moving branch: both change CI without a commit here (ubuntu-latest moved 24.04 to 26 on 2026-10-19) |

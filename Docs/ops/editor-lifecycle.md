@@ -64,7 +64,21 @@ Unreal MCP revision mismatch: this checkout is dab8994..., the running plugin re
 ```
 
 That means the editor is running a stale `UnrealEditor-UnrealMCP.dll`. Do not retry and do not
-launch another editor: reap, rebuild, restart.
+launch another editor: reap, rebuild, restart. `build_plugin.py` is that whole loop in one
+command:
+
+```bash
+uv run --project Python python Python/scripts/build_plugin.py                     # reap, rebuild, verify
+uv run --project Python python Python/scripts/build_plugin.py --restart           # ... and bring the editor back
+uv run --project Python python Python/scripts/build_plugin.py --install-into <host project> --restart
+```
+
+It drops UBT's cached rules and touches `UnrealMCP.Build.cs` (mtime only, content untouched),
+builds, then reads `MCP_REVISION` back out of the generated header and fails unless it names
+HEAD. Touching rather than editing is what keeps `git status` empty and the result at
+`built_dirty: false`; and because no build product is deleted, a refused build leaves the
+plugin as it was. It reaps this project's editor and the `--install-into` host's first, and
+names a stray editor if UBT refuses for Live Coding. By hand, the same three steps:
 
 ```bash
 uv run --project Python python Python/scripts/editor_process.py reap
@@ -84,7 +98,8 @@ Touch `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs` (an
 whitespace) before rebuilding, or do a clean build; only then does the makefile invalidate and the
 new revision get baked in. And a plugin
 **copied into another project** records that project's HEAD, which cannot match this repo: build
-the copy with `MCP_REVISION=<this repo's HEAD>`. Pinning at build time is the tool for that: the
+the copy with `MCP_REVISION=<this repo's HEAD>`, or let `build_plugin.py --install-into` copy the
+build made here, which already carries it. Pinning at build time is the tool for that: the
 server reads its own `.git` and ignores an override that disagrees with it, so a stale injected
 value cannot wedge the handshake again. A
 plugin built from a dirty tree is reported (`built_dirty`) and logged as a warning rather than
