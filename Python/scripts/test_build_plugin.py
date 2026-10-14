@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for build_plugin.py's pure helpers.
 
-The whole point of the script is that the DLL it produces names the current commit, so
-the parse of the generated header and the verdict drawn from it are the parts worth
-pinning. They run here on fixtures only - no editor, no UBT, and POSIX path shapes, so
-the same tests pass on the Linux CI runner as on a Windows checkout.
+The script exists to build a plugin whose version matches what the server speaks, so the
+two version parses and the verdict drawn from them are the parts worth pinning. They run
+here on fixtures only - no editor, no UBT, and POSIX path shapes, so the same tests pass
+on the Linux CI runner as on a Windows checkout.
 
 Run directly or with unittest.
 """
@@ -15,6 +15,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+import zipfile
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("build_plugin", SCRIPT_DIR / "build_plugin.py")
@@ -38,45 +39,39 @@ class LayoutTests(unittest.TestCase):
             build_plugin.build_bat(pathlib.Path("/eng/UE_5.6")),
             pathlib.Path("/eng/UE_5.6/Engine/Build/BatchFiles/Build.bat"))
 
-    def test_definitions_header_names_module_and_target_type(self):
-        """The header UBT writes the revision into; both halves of the path must line up."""
-        header = build_plugin.definitions_header(pathlib.Path("/p/Plugins/UnrealMCP"))
-        self.assertEqual(header.name, "Definitions.UnrealMCP.h")
-        self.assertEqual(header.parts[-2], "UnrealMCP")
-        self.assertEqual(header.parts[-4], "UnrealEditor")
 
-
-class ReadBakedRevisionTests(unittest.TestCase):
-    def test_reads_revision_and_clean_flag(self):
+class VersionTests(unittest.TestCase):
+    def test_reads_the_version_from_a_plugin_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
-            header = _write(pathlib.Path(tmp) / "Definitions.UnrealMCP.h",
-                            '#define MCP_REVISION "abc123"\n#define MCP_REVISION_DIRTY 0\n')
-            self.assertEqual(build_plugin.read_baked_revision(header), ("abc123", "0"))
+            uplugin = _write(pathlib.Path(tmp) / "UnrealMCP.uplugin",
+                             '{\n\t"VersionName": "1.4.0"\n}\n')
+            self.assertEqual(build_plugin.plugin_version(uplugin), "1.4.0")
 
-    def test_reads_a_dirty_build(self):
+    def test_a_manifest_without_a_version_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
-            header = _write(pathlib.Path(tmp) / "d.h",
-                            '#define MCP_REVISION "deadbeef"\n#define MCP_REVISION_DIRTY 1\n')
-            self.assertEqual(build_plugin.read_baked_revision(header), ("deadbeef", "1"))
+            uplugin = _write(pathlib.Path(tmp) / "U.uplugin", "{}\n")
+            self.assertEqual(build_plugin.plugin_version(uplugin), "")
 
-    def test_missing_header_is_empty_not_an_error(self):
-        self.assertEqual(build_plugin.read_baked_revision(pathlib.Path("/nope/d.h")), ("", ""))
+    def test_a_missing_manifest_is_empty_not_an_error(self):
+        self.assertEqual(build_plugin.plugin_version(pathlib.Path("/nope/U.uplugin")), "")
 
+    def test_reads_the_server_plugin_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = _write(pathlib.Path(tmp) / "unreal_mcp_server.py",
+                            'PLUGIN_VERSION = "1.4.0"\nother = 1\n')
+            self.assertEqual(build_plugin.server_version(server), "1.4.0")
 
-class RevisionProblemTests(unittest.TestCase):
-    def test_matching_revision_is_clean(self):
-        self.assertEqual(build_plugin.revision_problem("abc", "0", "abc"), "")
+    def test_agreement_is_clean(self):
+        self.assertEqual(build_plugin.version_problem("1.4.0", "1.4.0"), "")
 
-    def test_a_stale_revision_names_both_sides(self):
-        message = build_plugin.revision_problem("old", "0", "new")
-        self.assertIn("old", message)
-        self.assertIn("new", message)
+    def test_a_mismatch_names_both_sides(self):
+        message = build_plugin.version_problem("1.3.0", "1.4.0")
+        self.assertIn("1.3.0", message)
+        self.assertIn("1.4.0", message)
 
-    def test_no_baked_revision_fails_closed(self):
-        self.assertIn("not built", build_plugin.revision_problem("", "", "new"))
-
-    def test_a_dirty_build_is_reported(self):
-        self.assertIn("built_dirty", build_plugin.revision_problem("abc", "1", "abc"))
+    def test_either_side_missing_fails_closed(self):
+        self.assertIn("PLUGIN_VERSION", build_plugin.version_problem("1.4.0", ""))
+        self.assertIn("VersionName", build_plugin.version_problem("", "1.4.0"))
 
 
 class RefreshTests(unittest.TestCase):
@@ -151,6 +146,103 @@ class ResolveInstallTests(unittest.TestCase):
             _write(folder / "B.uproject", "{}")
             _plugin, uproject = build_plugin.resolve_install(folder)
             self.assertIsNone(uproject, "two .uproject files must not be guessed")
+
+
+class TransformTests(unittest.TestCase):
+    BUILD_CS = (
+        "using UnrealBuildTool;\n"
+        "\n"
+        "public class UnrealMCP : ModuleRules\n"
+        "{\n"
+        "\tpublic UnrealMCP(ReadOnlyTargetRules Target) : base(Target)\n"
+        "\t{\n"
+        "\t\tPCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;\n"
+        "\t\tIWYUSupport = IWYUSupport.Full;\n"
+        "\t}\n"
+        "}\n"
+    )
+
+    def test_precompiled_line_is_added_after_pchusage(self):
+        out = build_plugin.with_precompiled(self.BUILD_CS)
+        self.assertIn("\t\tPCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;\n"
+                      "\t\tbUsePrecompiled = true;\n", out)
+
+    def test_precompiled_leaves_the_rest_untouched(self):
+        out = build_plugin.with_precompiled(self.BUILD_CS)
+        self.assertEqual(out.replace("\t\tbUsePrecompiled = true;\n", ""), self.BUILD_CS)
+
+    def test_precompiled_is_idempotent(self):
+        once = build_plugin.with_precompiled(self.BUILD_CS)
+        self.assertEqual(build_plugin.with_precompiled(once), once)
+
+    def test_installed_true_flips_false(self):
+        manifest = '{\n\t"Installed": false,\n\t"VersionName": "1.4.0"\n}\n'
+        flipped = build_plugin.with_installed_true(manifest)
+        self.assertIn('"Installed": true', flipped)
+        self.assertNotIn('"Installed": false', flipped)
+
+    def test_installed_true_is_added_when_absent(self):
+        manifest = '{\n\t"FileVersion": 3,\n\t"VersionName": "1.4.0"\n}\n'
+        self.assertIn('"Installed": true', build_plugin.with_installed_true(manifest))
+
+
+class PackageNameTests(unittest.TestCase):
+    def test_engine_tag_from_the_install_folder(self):
+        self.assertEqual(build_plugin.engine_tag(pathlib.Path("/eng/UE_5.6")), "5.6")
+        self.assertEqual(build_plugin.engine_tag(pathlib.Path("/eng/not-an-engine")), "")
+
+    def test_the_asset_name_matches_the_splinearray_form(self):
+        self.assertEqual(build_plugin.package_name("1.4.0", "5.6"),
+                         "UnrealMCP-1.4.0-UE5.6-Win64.zip")
+
+
+class BinaryFormTests(unittest.TestCase):
+    """A host copy carries no C++, a bUsePrecompiled stub, and an Installed:true manifest."""
+
+    @staticmethod
+    def _fake_plugin(root: pathlib.Path) -> pathlib.Path:
+        plugin = root / "UnrealMCP"
+        _write(plugin / "UnrealMCP.uplugin",
+               '{\n\t"Installed": false,\n\t"VersionName": "1.4.0"\n}\n')
+        _write(plugin / "Source" / "UnrealMCP" / "UnrealMCP.Build.cs", TransformTests.BUILD_CS)
+        _write(plugin / "Source" / "UnrealMCP" / "Private" / "UnrealMCPBridge.cpp", "// cpp\n")
+        _write(plugin / "Source" / "UnrealMCP" / "Public" / "MCPPluginVersion.h", "// h\n")
+        _write(plugin / "Binaries" / "Win64" / "UnrealEditor-UnrealMCP.dll", "dll")
+        _write(plugin / "Binaries" / "Win64" / "UnrealEditor.modules", "{}")
+        return plugin
+
+    def test_install_writes_the_binary_form_and_no_cpp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            dest = root / "host" / "Plugins" / "UnrealMCP"
+            build_plugin.binary_form(self._fake_plugin(root), dest)
+            self.assertIn('"Installed": true',
+                          (dest / "UnrealMCP.uplugin").read_text(encoding="utf-8"))
+            stub = (dest / "Source" / "UnrealMCP" / "UnrealMCP.Build.cs").read_text(encoding="utf-8")
+            self.assertIn("bUsePrecompiled = true;", stub)
+            self.assertTrue((dest / "Binaries" / "Win64" / "UnrealEditor-UnrealMCP.dll").is_file())
+            cpp = [p.name for p in dest.rglob("*.[ch]pp")] + [p.name for p in dest.rglob("*.h")]
+            self.assertEqual(cpp, [], f"the host copy must carry no C++ source: {cpp}")
+
+    def test_install_clears_a_previous_source_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            dest = root / "host" / "Plugins" / "UnrealMCP"
+            _write(dest / "Source" / "UnrealMCP" / "Private" / "Stale.cpp", "// stale\n")
+            build_plugin.binary_form(self._fake_plugin(root), dest)
+            self.assertEqual(list(dest.rglob("*.cpp")), [])
+
+    def test_package_layout_is_the_binary_form(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            out = root / "dist" / "UnrealMCP-1.4.0-UE5.6-Win64.zip"
+            build_plugin.package_plugin(self._fake_plugin(root), out)
+            with zipfile.ZipFile(out) as archive:
+                names = sorted(archive.namelist())
+            self.assertEqual(names, ["Binaries/Win64/UnrealEditor-UnrealMCP.dll",
+                                     "Binaries/Win64/UnrealEditor.modules",
+                                     "Source/UnrealMCP/UnrealMCP.Build.cs",
+                                     "UnrealMCP.uplugin"])
 
 
 if __name__ == "__main__":

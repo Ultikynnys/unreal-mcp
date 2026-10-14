@@ -9,7 +9,6 @@ import os
 import pathlib
 import re
 import socket
-import subprocess
 import sys
 import json
 import threading
@@ -91,134 +90,42 @@ class EditorNotAnswering(RuntimeError):
     own message instead of masquerading as a stalled editor.
     """
 
-# --- Revision handshake -----------------------------------------------------
-# Identity is the commit, not a hand-incremented number: the plugin bakes in the commit it was
-# BUILT from (UnrealMCP.Build.cs -> MCP_REVISION) and this server uses the commit it runs from,
-# so any drift between the two is a mismatch and nobody has to remember to bump a constant. The
-# checkout is assumed to be a git repository.
-REPO_ROOT = pathlib.Path(_SERVER_DIR).parent
+# --- Plugin version handshake ------------------------------------------------
+# Identity is the plugin's OWN version, not the host project's commit: the plugin reports the
+# VersionName from its .uplugin descriptor and this server declares the version it speaks, so a
+# plugin build is portable across projects. test_version_handshake.py pins the two together, and
+# the pre-push battery fails if they drift - bump UnrealMCP.uplugin and PLUGIN_VERSION together.
+PLUGIN_VERSION = "1.4.0"
 
 
-def _revision_from_git_dir(root: pathlib.Path) -> str:
-    """The commit at HEAD, read straight out of .git: no git binary, no PATH dependency.
+def plugin_version() -> str:
+    """The plugin version this server speaks. Kept in step with UnrealMCP.uplugin by the check."""
+    return PLUGIN_VERSION
 
-    The server is spawned by an MCP host whose PATH frequently has no git on it (a GUI launcher,
-    a packaged install), so a subprocess call fails while the checkout sits right there. Reading
-    the metadata also makes the handshake work on a machine that never had git on PATH.
+
+def version_mismatch_error(reported: str) -> str:
+    """'' when the running plugin is this version, otherwise the refusal.
+
+    Three refusals, all fail-closed: a different version, no version field at all (a plugin built
+    before the handshake), and "unknown" (a plugin whose descriptor version could not be read).
     """
-    git_dir = root / ".git"
-    if git_dir.is_file():
-        # A linked worktree or submodule: ".git" is a file pointing at the real directory.
-        marker = git_dir.read_text(encoding="utf-8", errors="replace").strip()
-        if not marker.startswith("gitdir:"):
-            return ""
-        git_dir = (root / marker.split(":", 1)[1].strip()).resolve()
-    try:
-        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
-    if not head.startswith("ref:"):
-        return head  # detached HEAD: the hash is the whole file
-    ref = head.split(":", 1)[1].strip()
-    try:
-        return (git_dir / ref).read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        pass
-    # After a gc a branch lives in packed-refs rather than in its own file.
-    try:
-        packed = (git_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    for line in packed.splitlines():
-        if line.endswith(" " + ref):
-            return line.split(" ", 1)[0].strip()
-    return ""
-
-
-def repo_revision() -> str:
-    """The commit this server runs from: the checkout answers, the env is only a fallback.
-
-    The live read wins. UNREAL_MCP_REVISION is consulted only when the checkout cannot answer (a
-    packaged install, a copied tree), because an override that outranks reality wedges the
-    handshake with a value no file on disk holds: a stale injected fa26928 refused every call while
-    the checkout, the ref and the plugin were all a1fae27, and nothing on disk explained it. When
-    both exist and disagree the disagreement is logged, so a value's source is never a mystery.
-    """
-    from_git_dir = _revision_from_git_dir(REPO_ROOT)
-    override = (os.getenv("UNREAL_MCP_REVISION") or "").strip()
-    if from_git_dir:
-        if override and override != from_git_dir:
-            logger.warning(
-                "Ignoring UNREAL_MCP_REVISION=%s: this checkout is %s and the checkout wins. "
-                "Pin the plugin at build time (MCP_REVISION) if the two are meant to differ.",
-                override, from_git_dir)
-        return from_git_dir
-    if override:
-        logger.warning("No revision in .git; falling back to UNREAL_MCP_REVISION=%s", override)
-        return override
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        logger.error("Could not read the revision from .git or from git: %s", error)
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-_dirty_warned = False
-
-
-def _warn_built_dirty_once(revision: str) -> None:
-    """A dirty build's commit does not identify the code it runs; say so once per process."""
-    global _dirty_warned
-    if not _dirty_warned:
-        _dirty_warned = True
-        logger.warning(
-            "The running plugin was built from a dirty tree (revision %s), so its revision does "
-            "not identify the code it is running; rebuild from a clean tree before trusting it",
-            revision or "unknown")
-
-
-def revision_mismatch_error(reported: str) -> str:
-    """'' when the running plugin was built from this revision, otherwise the refusal.
-
-    The revision is read LIVE here, once per handshake, never snapshotted at import: a long-lived
-    server has to describe the checkout as it is now. Cached, committing while the server ran left
-    it demanding a commit nobody was on, which looks exactly like a value injected from outside.
-
-    Three refusals, all fail-closed: a different commit, no revision field at all (a plugin
-    built before the handshake), and "unknown" (a plugin built where git was unavailable).
-    """
-    revision = repo_revision()
-    if not revision:
-        return (
-            "Unreal MCP revision unknown: this server cannot tell which commit it is running "
-            "from (no git, or not a checkout). Set UNREAL_MCP_REVISION to the shipped revision, "
-            "or run the server from a git checkout; every call fails until the two sides can be "
-            "compared."
-        )
-    if reported == revision:
+    if reported == PLUGIN_VERSION:
         return ""
     if not reported:
-        detail = ("the running Unreal plugin reported no revision at all, so it was built before "
-                  "the handshake existed")
+        detail = ("the running Unreal plugin reported no version at all, so it predates the "
+                  "handshake")
     elif reported == "unknown":
-        detail = ("the running Unreal plugin was built without a revision (git unavailable at "
-                  "build time, or MCP_REVISION unset)")
+        detail = ("the running Unreal plugin could not read its own descriptor version, so it "
+                  "was installed without a readable UnrealMCP.uplugin")
     else:
         detail = f"the running plugin reports {reported}"
     return (
-        f"Unreal MCP revision mismatch: this checkout is {revision}, {detail}. The running "
-        f"plugin is stale: rebuild it and restart the editor before calling again. Rebuild with "
-        f'"<UE>\\Engine\\Build\\BatchFiles\\Build.bat" MCPGameProjectEditor Win64 Development '
-        f'"MCPGameProject/MCPGameProject.uproject" -WaitMutex, then run '
-        f"`uv run --project Python python Python/scripts/editor_process.py restart`. "
-        f"A plain rebuild can answer 'up to date' and keep the old revision, so touch "
-        f"MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs first (or do a "
-        f"clean build). "
-        f"Every call fails until the plugin matches; retrying the same call will not help."
+        f"Unreal MCP version mismatch: this server speaks UnrealMCP {PLUGIN_VERSION}, but "
+        f"{detail}. Install a plugin build whose UnrealMCP.uplugin VersionName is {PLUGIN_VERSION} "
+        f"(copy it into the project's Plugins/ folder, or run "
+        f"`uv run --project Python python Python/scripts/build_plugin.py --install-into <project>`) "
+        f"and restart the editor. Every call fails until the versions match; retrying the same "
+        f"call will not help."
     )
 
 
@@ -437,24 +344,22 @@ class UnrealConnection:
             # with a ping (which changes nothing) and refuse before dispatching anything.
             if command != "ping":
                 probe = self._probe_reply()
-                mismatch = revision_mismatch_error(str(probe.get("revision") or ""))
+                mismatch = version_mismatch_error(str(probe.get("plugin_version") or ""))
                 if mismatch:
                     logger.error("Refusing '%s' before dispatch: %s", command, mismatch)
                     return {"success": False, "result": None, "message": mismatch,
-                            "code": "REVISION_MISMATCH"}
+                            "code": "VERSION_MISMATCH"}
 
             response = self._dispatch(command, params)
 
             # Belt and braces: a reply that disagrees with the handshake is refused too, in
             # case the editor was swapped for a different build between the two round trips.
-            reported = str(response.get("revision") or "") if isinstance(response, dict) else ""
-            mismatch = revision_mismatch_error(reported)
+            reported = str(response.get("plugin_version") or "") if isinstance(response, dict) else ""
+            mismatch = version_mismatch_error(reported)
             if mismatch:
                 logger.error("Refusing command '%s': %s", command, mismatch)
                 return {"success": False, "result": None, "message": mismatch,
-                        "code": "REVISION_MISMATCH"}
-            if isinstance(response, dict) and response.get("built_dirty"):
-                _warn_built_dirty_once(reported)
+                        "code": "VERSION_MISMATCH"}
 
             # Normalize every backend reply to ONE canonical envelope:
             #   {"success": bool, "result": Any, "message": str}
@@ -524,12 +429,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
-    startup_revision = repo_revision()
-    logger.info("This server runs from revision %s", startup_revision or "UNKNOWN (no git checkout)")
-    if not startup_revision:
-        logger.warning("Cannot determine this server's revision. Set UNREAL_MCP_REVISION, or run "
-                       "from a git checkout: every call is refused until the plugin and this side "
-                       "can be compared.")
+    logger.info("This server speaks UnrealMCP plugin version %s", PLUGIN_VERSION)
     try:
         _unreal_connection = get_unreal_connection()
         if _unreal_connection:

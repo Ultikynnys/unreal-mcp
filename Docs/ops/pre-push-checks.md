@@ -52,7 +52,7 @@ was wired in. If any check fails to import, the runner prints the command that f
 | agent-facing docs | A tool or parameter named in the instructions that does not exist; a docstring documenting a parameter that does not exist (the `suggested_placement` shape); an instruction naming a deleted file (`archive_mcp_client.py`); a tool with parameters that the smoke script never exercises; a hook that has been unwired or silenced |
 | tool surface typing | A tool parameter typed `Any` / `object` / `Optional` / `Union`, which the project forbids |
 | docs <-> tools parity | A documentation page citing a tool that does not exist, or missing a registered one |
-| protocol version agreement | The Python declaration, the C++ macro and the plugin's reported version disagreeing |
+| plugin version agreement | The plugin's `.uplugin` VersionName and the server's PLUGIN_VERSION drifting apart, a plugin build that derives its identity from git again, or the refusal moving after dispatch |
 | modal + failure guards | Losing the unattended-script guard, the modal pre-flight or the failure-reason passthrough (the dialog that could block an automated job) |
 | editor lifecycle helpers | The reaper's project scoping, the snapshot-freshness rule, or the crash-marker cleanup regressing |
 | plugin build helpers | The force-refresh, the header parse or the revision verdict regressing, so a rebuild keeps a stale baked revision |

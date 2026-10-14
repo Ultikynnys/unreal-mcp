@@ -38,73 +38,83 @@ uv run --project Python python Python/scripts/editor_process.py restart --wait 1
 
 
 
-## Revision mismatch: rebuild, do not guess
+## Version mismatch: install the matching plugin, do not guess
 
-There is no hand-incremented number. The plugin bakes in the commit it was **built** from and the
-server compares it against the commit it **runs** from, so drift cannot be forgotten:
+The plugin's identity is its OWN version, not the project that hosts it. The plugin reports the
+`VersionName` from its `.uplugin` descriptor at runtime and the server declares the version it
+speaks, so a plugin build is portable across projects and committing changes nothing:
 
 | Side | Where |
 |---|---|
-| Python server | `.git` read live on every handshake; `UNREAL_MCP_REVISION` only when the checkout cannot answer, and a value that disagrees with `.git` is ignored and logged |
-| Plugin build | `MCP_REVISION` define from `UnrealMCP.Build.cs`, baked in at build time |
-| Loaded plugin | stamped as `revision` (plus `built_dirty`) on every reply |
+| Python server | `PLUGIN_VERSION` in `unreal_mcp_server.py` - the version it speaks |
+| Plugin manifest | `UnrealMCP.uplugin` `VersionName` - the source of truth, carried by the plugin |
+| Loaded plugin | stamped as `plugin_version` on every reply, read from the descriptor |
+
+The battery's `plugin version agreement` check holds the manifest and the server together, so the
+two cannot drift apart silently; bump both to ship a wire change.
 
 The server pings first and refuses to send the command when the two differ, so nothing is
 executed. Three refusals, all fail-closed:
 
-- a different commit: the reply names both revisions and the rebuild;
-- no `revision` field at all: the plugin predates the handshake;
-- `unknown`: the plugin was built where git was unavailable.
+- a different version: the reply names both and points at the fix;
+- no `plugin_version` field at all: the plugin predates the handshake;
+- `unknown`: the plugin could not read its own descriptor.
 
 The failure looks like this:
 
 ```text
-Unreal MCP revision mismatch: this checkout is dab8994..., the running plugin reports e17c0a1...
-... rebuild it and restart the editor before calling again.
+Unreal MCP version mismatch: this server speaks UnrealMCP 1.4.0, but the running plugin reports
+1.3.0. Install a plugin build whose UnrealMCP.uplugin VersionName is 1.4.0 and restart the editor.
 ```
 
-That means the editor is running a stale `UnrealEditor-UnrealMCP.dll`. Do not retry and do not
-launch another editor: reap, rebuild, restart. `build_plugin.py` is that whole loop in one
-command:
+That means the editor is running a plugin of the wrong version. Install the matching plugin, then
+restart the editor; do not retry and do not launch another editor. `build_plugin.py` is that loop
+in one command:
 
 ```bash
-uv run --project Python python Python/scripts/build_plugin.py                     # reap, rebuild, verify
+uv run --project Python python Python/scripts/build_plugin.py                     # build, verify
 uv run --project Python python Python/scripts/build_plugin.py --restart           # ... and bring the editor back
 uv run --project Python python Python/scripts/build_plugin.py --install-into <host project> --restart
+uv run --project Python python Python/scripts/build_plugin.py --package dist      # the release zip
+uv run --project Python python Python/scripts/build_plugin.py --upload v1.4.0     # ... attached to a release
 ```
 
-It drops UBT's cached rules and touches `UnrealMCP.Build.cs` (mtime only, content untouched),
-builds, then reads `MCP_REVISION` back out of the generated header and fails unless it names
-HEAD. Touching rather than editing is what keeps `git status` empty and the result at
-`built_dirty: false`; and because no build product is deleted, a refused build leaves the
-plugin as it was. It reaps this project's editor and the `--install-into` host's first, and
-names a stray editor if UBT refuses for Live Coding. By hand, the same three steps:
+It builds the plugin, checks the repo's `.uplugin` version against the server's, and with
+`--install-into` lays it into a host project as **binaries only**: an `Installed: true` manifest, a
+`Source/<Module>/<Module>.Build.cs` stub carrying `bUsePrecompiled = true;`, and `Binaries/` -
+never the C++. `--restart` then relaunches the editor and waits for the handshake to report the
+right version. It reaps this project's editor and the host's first, and names a stray editor if UBT
+refuses for Live Coding. By hand, the same steps:
 
 ```bash
 uv run --project Python python Python/scripts/editor_process.py reap
-# a commit made the DLL stale: touch UnrealMCP.Build.cs so UBT re-evaluates, or the build says up to date
-"C:\Program Files\Epic Games\UE_5.6\Engine\Build\BatchFiles\Build.bat" MCPGameProjectEditor Win64 Development MCPGameProject/MCPGameProject.uproject -WaitMutex -NoHotReloadFromIDE
+"C:\Program Files\Epic Games\UE_5.6\Engine\Build\BatchFiles\Build.bat" MCPGameProjectEditor Win64 Development MCPGameProject/MCPGameProject.uproject -WaitMutex
 uv run --project Python python Python/scripts/editor_process.py restart --wait 180
 ```
 
 The reap is not optional: a running editor holds `UnrealEditor-UnrealMCP.dll`, so the link step
 fails with `LNK1104: cannot open file ... being used by another process`.
 
-Two consequences worth knowing. Committing moves the server's revision immediately, so every call is
-refused until the plugin is rebuilt - that is the intent, and nothing should soften it. What the
-rebuild must do is actually refresh the baked revision, and a plain rebuild often will not: UBT
-caches rule evaluation, so `Build.bat` answers `Target is up to date` and keeps the old revision.
-Touch `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/UnrealMCP.Build.cs` (any edit, even
-whitespace) before rebuilding, or do a clean build; only then does the makefile invalidate and the
-new revision get baked in. And a plugin
-**copied into another project** records that project's HEAD, which cannot match this repo: build
-the copy with `MCP_REVISION=<this repo's HEAD>`, or let `build_plugin.py --install-into` copy the
-build made here, which already carries it. Pinning at build time is the tool for that: the
-server reads its own `.git` and ignores an override that disagrees with it, so a stale injected
-value cannot wedge the handshake again. A
-plugin built from a dirty tree is reported (`built_dirty`) and logged as a warning rather than
-refused, because a commit cannot identify a dirty build and refusing would block the normal
-edit-build-test loop.
+Two consequences worth knowing. Because the identity is the plugin's own, a copy carries its
+version into any host - the same build works everywhere, and `--install-into` is a convenience
+rather than a workaround for a revision that cannot match. And a rebuild now picks up source edits
+normally: it was the commit-derived `MCP_REVISION` define, not the sources, that changed under
+UBT's feet and made a plain rebuild answer `Target is up to date`. `build_plugin.py --force` (drop
+the cached rules, touch the rule file) remains for the rare build that still claims to be up to date.
+
+## Shipping the plugin: binaries only, over a release
+
+The host project never gets MCP source, and the repo serves the same shape over a release - the
+pattern another plugin of mine, `SplineArray`, uses:
+
+- `--package DIR` writes `UnrealMCP-<version>-UE<engine>-Win64.zip` holding exactly what
+  `--install-into` lays down: the `Installed: true` manifest, the `bUsePrecompiled` `Build.cs`
+  stub, and `Binaries/` - no C++.
+- `--upload TAG` attaches that zip to a release (`gh release upload TAG <zip> --clobber`).
+
+A host installs it by unzipping into `<Project>/Plugins/UnrealMCP`. A C++ project links the shipped
+binary directly (`bUsePrecompiled`); nothing recompiles, and there is no source in the host to drift
+from the binary.
 
 ## The out-of-band state file
 

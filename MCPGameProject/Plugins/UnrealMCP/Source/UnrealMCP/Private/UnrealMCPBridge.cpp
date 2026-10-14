@@ -61,7 +61,7 @@
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "MCPStateSnapshot.h"
-#include "MCPBuildRevision.h"
+#include "MCPPluginVersion.h"
 #include "CoreGlobals.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -407,11 +407,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     auto DispatchOnGameThread = [this, CommandType, Params, Promise]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
-        // Stamp the revision this plugin was BUILT from on EVERY reply (success, error, refusals):
-        // the server refuses a call when its own checkout is on a different commit, so a stale
-        // plugin is detectable on any call, not only a get_capabilities probe.
-        ResponseJson->SetStringField(TEXT("revision"), MCP_REVISION);
-        ResponseJson->SetBoolField(TEXT("built_dirty"), MCP_REVISION_DIRTY != 0);
+        // The plugin's OWN version, stamped on EVERY reply (success, error, refusals): the server
+        // refuses a call when its copy differs, so a stale plugin is caught on any call.
+        ResponseJson->SetStringField(TEXT("plugin_version"), UnrealMCPPluginVersion());
         
         // Unattended: an engine prompt auto-answers instead of blocking the game thread, and
         // GIsSilent suppresses the slow-task progress window that used to refuse every later call.
