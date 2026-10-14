@@ -44,6 +44,9 @@ import editor_process as ep
 
 MODULE = "UnrealMCP"
 BUILD_CS_REL = ("Source", MODULE, f"{MODULE}.Build.cs")
+# Debug symbols never ship: not a build requirement, and SplineArray (the pattern this mirrors)
+# documents shipping none.
+SHIP_EXCLUDE_SUFFIXES = (".pdb",)
 # UBT refuses to build while a Live Coding session is up, and it does not name the editor.
 LIVE_CODING_MARKER = "Live Coding is active"
 DEFAULT_UPROJECT = REPO_ROOT / "MCPGameProject" / "MCPGameProject.uproject"
@@ -151,6 +154,11 @@ def package_name(version: str, tag: str) -> str:
     return f"{MODULE}-{version}-UE{tag}-{DEFAULT_PLATFORM}.zip"
 
 
+def is_shipped(relative: pathlib.Path) -> bool:
+    """True when a file under Binaries/ belongs in the shipped (and installed) plugin."""
+    return relative.suffix.lower() not in SHIP_EXCLUDE_SUFFIXES
+
+
 def find_uproject(project_dir: pathlib.Path) -> pathlib.Path | None:
     """The single .uproject in a project folder, or None when it is not one."""
     matches = sorted(project_dir.glob("*.uproject"))
@@ -252,8 +260,9 @@ def binary_form(plugin_dir: pathlib.Path, dest: pathlib.Path) -> None:
     print(f"install: {MODULE}.uplugin (Installed: true)")
 
     shutil.rmtree(dest / "Binaries", ignore_errors=True)
-    shutil.copytree(plugin_dir / "Binaries", dest / "Binaries")
-    print(f"install: Binaries -> {dest / 'Binaries'}")
+    shutil.copytree(plugin_dir / "Binaries", dest / "Binaries",
+                    ignore=shutil.ignore_patterns(*[f"*{s}" for s in SHIP_EXCLUDE_SUFFIXES]))
+    print(f"install: Binaries -> {dest / 'Binaries'} (no debug symbols)")
 
 
 def package_plugin(plugin_dir: pathlib.Path, out_zip: pathlib.Path) -> None:
@@ -269,8 +278,9 @@ def package_plugin(plugin_dir: pathlib.Path, out_zip: pathlib.Path) -> None:
         archive.writestr(f"{MODULE}.uplugin", with_installed_true(manifest))
         archive.writestr(f"Source/{MODULE}/{MODULE}.Build.cs", with_precompiled(stub))
         for path in sorted((plugin_dir / "Binaries").rglob("*")):
-            if path.is_file():
-                archive.write(path, str(path.relative_to(plugin_dir)).replace("\\", "/"))
+            relative = path.relative_to(plugin_dir)
+            if path.is_file() and is_shipped(relative):
+                archive.write(path, str(relative).replace("\\", "/"))
     print(f"package: {out_zip} ({out_zip.stat().st_size} bytes)")
 
 

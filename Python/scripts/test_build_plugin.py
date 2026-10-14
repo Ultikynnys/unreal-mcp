@@ -195,6 +195,11 @@ class PackageNameTests(unittest.TestCase):
         self.assertEqual(build_plugin.package_name("1.4.0", "5.6"),
                          "UnrealMCP-1.4.0-UE5.6-Win64.zip")
 
+    def test_debug_symbols_are_not_shipped(self):
+        self.assertFalse(build_plugin.is_shipped(pathlib.Path("Binaries/Win64/x.pdb")))
+        self.assertTrue(build_plugin.is_shipped(pathlib.Path("Binaries/Win64/x.dll")))
+        self.assertTrue(build_plugin.is_shipped(pathlib.Path("Binaries/Win64/UnrealEditor.modules")))
+
 
 class BinaryFormTests(unittest.TestCase):
     """A host copy carries no C++, a bUsePrecompiled stub, and an Installed:true manifest."""
@@ -208,6 +213,7 @@ class BinaryFormTests(unittest.TestCase):
         _write(plugin / "Source" / "UnrealMCP" / "Private" / "UnrealMCPBridge.cpp", "// cpp\n")
         _write(plugin / "Source" / "UnrealMCP" / "Public" / "MCPPluginVersion.h", "// h\n")
         _write(plugin / "Binaries" / "Win64" / "UnrealEditor-UnrealMCP.dll", "dll")
+        _write(plugin / "Binaries" / "Win64" / "UnrealEditor-UnrealMCP.pdb", "debug symbols")
         _write(plugin / "Binaries" / "Win64" / "UnrealEditor.modules", "{}")
         return plugin
 
@@ -223,6 +229,7 @@ class BinaryFormTests(unittest.TestCase):
             self.assertTrue((dest / "Binaries" / "Win64" / "UnrealEditor-UnrealMCP.dll").is_file())
             cpp = [p.name for p in dest.rglob("*.[ch]pp")] + [p.name for p in dest.rglob("*.h")]
             self.assertEqual(cpp, [], f"the host copy must carry no C++ source: {cpp}")
+            self.assertEqual(list(dest.rglob("*.pdb")), [], "debug symbols must not ship to the host")
 
     def test_install_clears_a_previous_source_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
